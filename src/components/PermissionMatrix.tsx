@@ -1,6 +1,7 @@
 'use client';
 
 import { Check, LockKeyhole, X } from 'lucide-react';
+import { useState } from 'react';
 import { permissionMatrix, type Permission } from '@/config/permissions';
 import { focusVisuals } from '@/config/focus-visuals';
 import { usePresenterStore } from '@/lib/presenter-store';
