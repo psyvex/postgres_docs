@@ -7,7 +7,8 @@ import { RowFilterVisualizer } from './RowFilterVisualizer';
 import { PermissionMatrix } from './PermissionMatrix';
 import { RowCompare } from './RowCompare';
 import { DatabaseGraph } from './DatabaseGraph';
-import { TriggerSimulator } from './TriggerSimulator';
+import { FunctionCallStack } from './FunctionCallStack';
+import { TriggerPipeline } from './TriggerPipeline';
 import { JourneyRail } from './JourneyRail';
 
 function Reveal({ id, children }: { id: 'sql' | 'role' | 'rls' | 'rows' | 'function' | 'trigger' | 'result'; children: React.ReactNode }) {
@@ -17,5 +18,5 @@ function Reveal({ id, children }: { id: 'sql' | 'role' | 'rls' | 'rows' | 'funct
 }
 
 export function InteractiveDatabasePanel() {
-  return <div className="space-y-4" aria-label="Interactive PostgreSQL teaching canvas"><JourneyRail/><Reveal id="result"><ExecutionStageBar/></Reveal><div className="grid gap-4 xl:grid-cols-2"><Reveal id="rows"><RowFilterVisualizer/></Reveal><Reveal id="role"><PermissionMatrix/></Reveal></div><div className="grid gap-4 xl:grid-cols-2"><Reveal id="function"><RowCompare/></Reveal><Reveal id="trigger"><TriggerSimulator/></Reveal></div><Reveal id="result"><DatabaseGraph/></Reveal><div className="text-center text-[9px] uppercase tracking-[.18em] text-slate-600">{focusJourney.length} guided steps · functions + triggers included</div></div>;
+  return <div className="space-y-4" aria-label="Interactive PostgreSQL teaching canvas"><JourneyRail/><Reveal id="result"><ExecutionStageBar/></Reveal><div className="grid gap-4 xl:grid-cols-2"><Reveal id="rows"><RowFilterVisualizer/></Reveal><Reveal id="role"><PermissionMatrix/></Reveal></div><div className="grid gap-4 xl:grid-cols-2"><Reveal id="function"><FunctionCallStack/></Reveal><Reveal id="trigger"><TriggerPipeline/></Reveal></div><div className="grid gap-4 xl:grid-cols-2"><Reveal id="function"><RowCompare/></Reveal><Reveal id="result"><DatabaseGraph/></Reveal></div><div className="text-center text-[9px] uppercase tracking-[.18em] text-slate-600">{focusJourney.length} guided steps · functions + triggers included</div></div>;
 }
