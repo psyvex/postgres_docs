@@ -1,0 +1,13 @@
+'use client';
+
+import { Play, Square, Terminal } from 'lucide-react';
+import { useState } from 'react';
+import { sqlEditorCopy, sqlEditorDefaults } from '@/config/sql-editor';
+
+export function SqlWorkspace() {
+  const [query, setQuery] = useState(sqlEditorDefaults.query);
+  const [running, setRunning] = useState(false);
+  const [activePanel, setActivePanel] = useState<'results' | 'messages'>('results');
+  const run = () => { setRunning(true); window.setTimeout(() => setRunning(false), 450); };
+  return <div className="flex min-h-[min(760px,calc(100vh-10rem))] min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-sm"><div className="flex flex-wrap items-center gap-2 border-b border-[var(--border)] px-3 py-2.5"><div className="flex items-center gap-2 text-xs font-semibold"><Terminal size={14} className="text-[var(--accent)]"/>{sqlEditorCopy.title}</div><span className="rounded-md bg-[var(--surface-hover)] px-2 py-1 text-[10px] text-[var(--muted)]">{sqlEditorCopy.database}</span><div className="ml-auto flex items-center gap-2"><span className="hidden sm:inline text-[10px] text-[var(--muted)]">{running ? 'Executing…' : sqlEditorCopy.ready}</span><button disabled={running} onClick={run} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"><Play size={12} className="mr-1 inline"/>{sqlEditorCopy.run}</button><button disabled={!running} onClick={() => setRunning(false)} className="rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-[11px] text-[var(--muted)] disabled:opacity-40"><Square size={11} className="mr-1 inline"/>{sqlEditorCopy.stop}</button></div></div><div className="min-h-0 flex-1 bg-[#0b1016]"><textarea spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} className="h-full min-h-64 w-full resize-none border-0 bg-transparent p-5 font-mono text-[12px] leading-6 text-slate-200 outline-none" aria-label="SQL query editor"/></div><div className="border-t border-[var(--border)] bg-[var(--surface)]"><div className="flex items-center gap-1 border-b border-[var(--border)] px-3 py-1.5">{(['results', 'messages'] as const).map((panel) => <button key={panel} onClick={() => setActivePanel(panel)} className={`rounded-md px-3 py-1 text-[10px] font-medium ${activePanel === panel ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'text-[var(--muted)]'}`}>{sqlEditorCopy[panel]}</button>)}</div><div className="min-h-28 p-4">{activePanel === 'results' ? <div className="text-xs text-[var(--muted)]">{sqlEditorCopy.empty}</div> : <div className="text-xs text-[var(--muted)]">{sqlEditorCopy.ready}</div>}</div></div></div>;
+}
