@@ -1,0 +1,251 @@
+Functions let you put logic **next to the data**: validations, calculations, whole business operations. They run inside the database, in the same transaction, with no round-trips. Used well, they're also a security tool: a narrow, audited doorway instead of broad table access.
+
+<Callout type="fun" title="A vending machine">
+A function is a vending machine bolted to the database. You put arguments in and get a result out. You never reach inside. With `SECURITY DEFINER`, the machine even has its own key to the storeroom, so customers can get a snack without getting a key to the warehouse.
+</Callout>
+
+<ResetDemo />
+
+## Functions vs procedures
+
+| | Function | Procedure *(PG 11+)* |
+|---|---|---|
+| Called with | `SELECT f(...)`, anywhere an expression fits | `CALL p(...)` |
+| Returns | a value, a row, or a set of rows | nothing (can use `OUT`/`INOUT` params) |
+| Transaction control | <No>runs inside the caller's transaction</No> | <Yes>may `COMMIT` / `ROLLBACK`</Yes> |
+| Use for | computed values, queries, trigger bodies, RLS helpers | batch jobs, multi-step maintenance |
+
+## Your first SQL function
+
+A `LANGUAGE sql` function is a saved query with parameters. The planner can often **inline** it into the calling query, making it nearly free.
+
+<SqlBlock title="Count tasks by status" sql={`CREATE OR REPLACE FUNCTION task_count(p_status text)
+  RETURNS bigint
+  LANGUAGE sql
+  STABLE
+AS $$
+  SELECT count(*) FROM tasks WHERE status = p_status
+$$;
+
+SELECT task_count('todo') AS todo, task_count('doing') AS doing, task_count('done') AS done;`} />
+
+### Returning rows: `RETURNS TABLE`
+
+<SqlBlock title="A reusable report" sql={`CREATE OR REPLACE FUNCTION project_progress(p_org int)
+  RETURNS TABLE (project text, total bigint, done bigint, pct_done numeric)
+  LANGUAGE sql
+  STABLE
+AS $$
+  SELECT p.name,
+         count(t.id),
+         count(t.id) FILTER (WHERE t.status = 'done'),
+         round(100.0 * count(t.id) FILTER (WHERE t.status = 'done') / nullif(count(t.id), 0), 1)
+  FROM projects p
+  LEFT JOIN tasks t ON t.project_id = p.id
+  WHERE p.org_id = p_org
+  GROUP BY p.name
+$$;
+
+SELECT * FROM project_progress(1) ORDER BY pct_done DESC NULLS LAST;`} />
+
+### SQL-standard bodies: `BEGIN ATOMIC`
+
+<Callout type="version" title="PostgreSQL 14+">
+Instead of a `$$ string $$`, a SQL function can have a **parsed** body. Postgres then checks it at creation time and tracks dependencies, so you can't drop a table the function uses by accident.
+</Callout>
+
+<SqlBlock title="Parsed, dependency-tracked function" sql={`CREATE OR REPLACE FUNCTION done_ratio(p_org int) RETURNS numeric
+  LANGUAGE sql STABLE
+BEGIN ATOMIC
+  SELECT round(avg((status = 'done')::int), 2) FROM tasks WHERE org_id = p_org;
+END;
+
+SELECT done_ratio(1) AS acme, done_ratio(2) AS globex;`} />
+
+## PL/pgSQL: variables, logic and errors
+
+When you need `IF`, loops, variables or custom errors, use **PL/pgSQL**.
+
+<SqlBlock title="assign_task: a safe business operation" sql={`CREATE OR REPLACE FUNCTION assign_task(p_task bigint, p_member int)
+  RETURNS tasks
+  LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_task   tasks;
+  v_member members;
+BEGIN
+  SELECT * INTO v_task FROM tasks WHERE id = p_task;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'task % does not exist', p_task USING ERRCODE = 'no_data_found';
+  END IF;
+
+  SELECT * INTO v_member FROM members WHERE id = p_member;
+  IF v_member.org_id IS DISTINCT FROM v_task.org_id THEN
+    RAISE EXCEPTION 'member % is not in the same organization as task %', p_member, p_task
+      USING HINT = 'Tasks can only be assigned within an organization.';
+  END IF;
+
+  UPDATE tasks SET assignee_id = p_member, updated_at = now()
+  WHERE id = p_task
+  RETURNING * INTO v_task;
+
+  RAISE NOTICE 'Task % assigned to %', p_task, v_member.name;
+  RETURN v_task;
+END;
+$$;
+
+SELECT id, title, assignee_id FROM assign_task(4, 2);`} />
+
+<SqlBlock title="Business rule enforced: cross-org assignment" sql={`SELECT * FROM assign_task(4, 3);  -- Carol works at Globex, task 4 belongs to Acme`} expect="ERROR: member 3 is not in the same organization as task 4 (with a HINT)." />
+
+### Handling errors
+
+<SqlBlock title="Catch, log, continue" sql={`CREATE OR REPLACE FUNCTION try_assign(p_task bigint, p_member int) RETURNS text
+  LANGUAGE plpgsql
+AS $$
+BEGIN
+  PERFORM assign_task(p_task, p_member);
+  RETURN 'ok';
+EXCEPTION
+  WHEN OTHERS THEN
+    -- Everything the block did is rolled back to a savepoint; the caller's transaction survives.
+    RETURN 'failed: ' || SQLERRM;
+END;
+$$;
+
+SELECT try_assign(4, 3) AS attempt_1, try_assign(4, 1) AS attempt_2;`} />
+
+<Callout type="warn">
+An `EXCEPTION` block creates a subtransaction. That's cheap once, expensive inside a loop over millions of rows. Validate first, then act.
+</Callout>
+
+## Volatility: tell the planner the truth
+
+| Category | Promise | Examples | Why it matters |
+|---|---|---|---|
+| `IMMUTABLE` | same inputs → same output, forever; no DB reads | `lower()`, math | can be used in **indexes**, pre-evaluated at plan time |
+| `STABLE` | same output within one statement; may read tables | `now()`, lookups | can be used for index scans, evaluated once per query |
+| `VOLATILE` *(default)* | anything goes; may modify data | `random()`, `nextval()` | re-evaluated every row, never optimized away |
+
+Lying is dangerous: an `IMMUTABLE` function that reads a table can make indexes return **wrong results** after the data changes. Also consider `STRICT` (returns NULL on any NULL input without running) and `PARALLEL SAFE`.
+
+## Procedures and transaction control
+
+<SqlBlock title="A procedure with an OUT parameter" sql={`CREATE OR REPLACE PROCEDURE close_sprint(p_org int, OUT closed int)
+  LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE tasks SET status = 'done', updated_at = now()
+  WHERE org_id = p_org AND status = 'doing';
+  GET DIAGNOSTICS closed = ROW_COUNT;
+END;
+$$;
+
+CALL close_sprint(1, NULL);`} />
+
+Procedures can `COMMIT` in the middle, which is useful for processing huge tables in batches without one giant transaction. This only works when `CALL` isn't itself inside an explicit transaction block:
+
+<SqlBlock static title="Batching with COMMIT (run from psql or your app, not inside BEGIN)" sql={`CREATE PROCEDURE purge_audit_log(p_keep interval)
+  LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_deleted int;
+BEGIN
+  LOOP
+    DELETE FROM audit_log
+    WHERE id IN (SELECT id FROM audit_log
+                 WHERE changed_at < now() - p_keep LIMIT 10000);
+    GET DIAGNOSTICS v_deleted = ROW_COUNT;
+    EXIT WHEN v_deleted = 0;
+    COMMIT;  -- release locks and WAL pressure between batches
+  END LOOP;
+END;
+$$;
+
+CALL purge_audit_log('90 days');`} />
+
+## SECURITY INVOKER vs SECURITY DEFINER
+
+<FunctionMachine />
+
+By default a function is `SECURITY INVOKER`: it runs with the **caller's** privileges and RLS. `SECURITY DEFINER` runs with the **owner's** privileges, like `sudo` for one operation.
+
+Real use case: anonymous visitors may see *how many* tasks an org has, but never the tasks themselves.
+
+<SqlBlock title="A narrow, privileged doorway" sql={`CREATE OR REPLACE FUNCTION public_task_count(p_org int) RETURNS bigint
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = lab, pg_temp   -- never trust the caller's search_path
+AS $$
+  SELECT count(*) FROM tasks WHERE org_id = p_org
+$$;
+
+REVOKE EXECUTE ON FUNCTION public_task_count(int) FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION public_task_count(int) TO app_anon;`} />
+
+<SqlBlock title="Anonymous: counting works…" as="anon" sql={`SELECT public_task_count(1) AS acme_tasks;`} expect="4, even though app_anon has no SELECT on tasks." />
+
+<SqlBlock title="…reading still doesn't" as="anon" sql={`SELECT title FROM tasks;`} expect="ERROR: permission denied for table tasks" />
+
+<Callout type="danger" title="The SECURITY DEFINER checklist">
+1. **Always** `SET search_path = <trusted schemas>, pg_temp` on the function. Otherwise a caller who can create objects earlier in the path (for example a `public.lower()` or a temp table) can make your privileged function run *their* code.
+2. `REVOKE EXECUTE … FROM PUBLIC`, then grant to specific roles.
+3. Owner should be a dedicated role with only the privileges this function needs, **not a superuser**.
+4. Treat every argument as hostile. Never build dynamic SQL with `||`; use `format('%I', …)` / `%L` or `EXECUTE … USING`.
+5. Remember RLS inside the function is evaluated as the **owner**, so filter explicitly.
+</Callout>
+
+### Functions as RLS helpers
+
+Complex permission checks belong in a function that policies call. Marking it `SECURITY DEFINER` also lets it read tables the caller can't, and avoids policy recursion:
+
+<SqlBlock static title="Pattern: membership helper used by policies" sql={`CREATE FUNCTION is_org_owner(p_org int) RETURNS boolean
+  LANGUAGE sql STABLE SECURITY DEFINER
+  SET search_path = lab, pg_temp
+AS $$
+  SELECT EXISTS (SELECT 1 FROM members
+                 WHERE id = current_member_id() AND org_id = p_org AND role = 'owner')
+$$;
+
+CREATE POLICY owners_manage_projects ON projects
+  FOR ALL TO app_member
+  USING ((SELECT is_org_owner(org_id)));`} />
+
+## Dynamic SQL, safely
+
+<SqlBlock title="format() with %I (identifier) and %L (literal)" sql={`CREATE OR REPLACE FUNCTION count_rows(p_table text) RETURNS bigint
+  LANGUAGE plpgsql STABLE
+AS $$
+DECLARE
+  n bigint;
+BEGIN
+  EXECUTE format('SELECT count(*) FROM %I', p_table) INTO n;  -- %I quotes identifiers safely
+  RETURN n;
+END;
+$$;
+
+SELECT count_rows('tasks') AS tasks, count_rows('members') AS members;`} />
+
+## Inspecting functions
+
+<SqlBlock title="Every function in the lab schema" sql={`SELECT p.proname AS name,
+       pg_get_function_arguments(p.oid) AS args,
+       l.lanname AS language,
+       CASE p.provolatile WHEN 'i' THEN 'immutable' WHEN 's' THEN 'stable' ELSE 'volatile' END AS volatility,
+       p.prosecdef AS security_definer,
+       p.proconfig AS settings
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+JOIN pg_language l ON l.oid = p.prolang
+WHERE n.nspname = 'lab'
+ORDER BY 1;`} />
+
+In `psql`: `\df lab.*` lists them, and `\sf assign_task` shows the source.
+
+## Check yourself
+
+1. Why can't a function `COMMIT`, but a procedure can?
+2. What could go wrong if `task_count` were declared `IMMUTABLE`?
+3. Name two things every `SECURITY DEFINER` function must have.
+4. Why is `format('%I', name)` safer than `'SELECT * FROM ' || name`?

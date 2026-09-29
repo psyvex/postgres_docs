@@ -1,0 +1,209 @@
+Normal privileges answer **"may this role touch the `tasks` table?"** Row-Level Security (RLS) answers the finer question: **"which rows of `tasks` may this user see or change?"** Postgres attaches your rules to the table itself, so every query, from every app, report, script and ORM, gets filtered the same way.
+
+<Callout type="fun" title="Think of it as a bouncer">
+The table is a club. Privileges (`GRANT SELECT`) decide whether you may walk up to the door. RLS is the bouncer at the door checking each row's wristband against your ID. If a row isn't on your list, it doesn't exist *for you*. You get no error, and the row just never comes out.
+</Callout>
+
+<ResetDemo />
+
+## Why RLS exists: the forgotten WHERE
+
+Every multi-tenant app has hundreds of queries like `SELECT … FROM tasks WHERE org_id = $1`. Forget that `WHERE` once, in one endpoint, a cron job or an admin export, and you have a data leak. RLS moves the rule **into the database**, so a forgotten filter is no longer a breach.
+
+First, meet our cast. Run this as the superuser (you) to see everything:
+
+<SqlBlock title="The demo data" sql={`SELECT t.id, t.title, t.status, o.name AS org, m.name AS assignee
+FROM tasks t
+JOIN organizations o ON o.id = t.org_id
+LEFT JOIN members m ON m.id = t.assignee_id
+ORDER BY t.id;`} />
+
+Acme Rockets (org 1) has Alice and Bob. Globex Labs (org 2) has Carol and Dan. Now let's act like the application: switch to the `app_member` role and tell Postgres *who* is calling. The **Run as** menu does this for you by running:
+
+<SqlBlock static title="What “Run as Alice” does before your query" sql={`SET app.member_id = '1';   -- who is calling (custom setting)
+SET app.org_id    = '1';   -- which tenant
+SET ROLE app_member;       -- the database role your app connects as`} />
+
+<SqlBlock title="Step 1: no RLS yet, so Alice sees Globex's secret plan" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="All 7 rows, including org 2's 'Secret launch plan'." />
+
+## How RLS works
+
+<RlsBouncer />
+
+The model has four rules. Learn these and nothing about RLS will surprise you:
+
+1. **Off by default.** RLS applies only after `ALTER TABLE … ENABLE ROW LEVEL SECURITY`.
+2. **Default deny.** Once enabled, if *no* policy applies to a user and command, they see **zero rows** and writes fail.
+3. **Policies are boolean filters.** A `USING (…)` expression is added to the query like an invisible `WHERE`. A `WITH CHECK (…)` expression validates **new** rows written by `INSERT`/`UPDATE`.
+4. **Some roles bypass it:** superusers, roles with `BYPASSRLS`, and the **table owner** (unless you `FORCE` it).
+
+### Step 2: turn it on, and everything disappears
+
+<SqlBlock title="Enable RLS (run as owner)" sql={`ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;`} />
+
+<SqlBlock title="Alice again" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="0 rows. This is default deny: RLS is on but no policy allows anything yet." />
+
+<Callout type="note">
+Notice there is **no error**. RLS filters silently. That is great for security but confusing while debugging, so always check `relrowsecurity` and `pg_policies` when rows "vanish" (the right-hand **Live schema** panel shows both).
+</Callout>
+
+### Step 3: your first policy
+
+<SqlBlock title="Members see their organization's tasks" sql={`CREATE POLICY tenant_read ON tasks
+  FOR SELECT
+  TO app_member
+  USING (org_id = current_org_id());`} />
+
+<SqlBlock title="Same query, different people" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="Alice → 4 Acme rows. Switch to Carol → 3 Globex rows. Then try Anonymous." />
+
+Try **Anonymous** in the menu. You get `permission denied for table tasks`, not zero rows. Why? **Privileges are checked before RLS.** `app_anon` was never granted `SELECT` on `tasks`, so the bouncer never even gets a look. RLS is *not* a replacement for `GRANT`; it's a second layer.
+
+## USING vs WITH CHECK
+
+| Clause | Applies to | Question it answers | If false |
+|---|---|---|---|
+| `USING` | existing rows: `SELECT`, `UPDATE`, `DELETE` | "Can I *see* this row?" | row is silently skipped |
+| `WITH CHECK` | new row versions: `INSERT`, `UPDATE` | "Am I allowed to *write* this row?" | **error** `new row violates row-level security policy` |
+
+For `UPDATE` you usually want both: `USING` picks which rows you may target, and `WITH CHECK` stops you from *moving* a row into another tenant. If you omit `WITH CHECK` on an `UPDATE`/`ALL` policy, Postgres reuses the `USING` expression.
+
+<SqlBlock title="Let members create and edit tasks in their own org" sql={`CREATE POLICY tenant_insert ON tasks
+  FOR INSERT TO app_member
+  WITH CHECK (org_id = current_org_id());
+
+CREATE POLICY tenant_update ON tasks
+  FOR UPDATE TO app_member
+  USING (org_id = current_org_id())
+  WITH CHECK (org_id = current_org_id());`} />
+
+<SqlBlock title="Alice tries to plant a task in Globex" as="alice" sql={`INSERT INTO tasks (org_id, project_id, title) VALUES (2, 3, 'Sneaky task');`} expect="ERROR: new row violates row-level security policy for table tasks" />
+
+<SqlBlock title="Alice tries to steal Globex's task by editing it" as="alice" sql={`UPDATE tasks SET title = 'mine now' WHERE id = 7;`} expect="UPDATE 0: row 7 is invisible to Alice, so there is nothing to update." />
+
+<SqlBlock title="…or to move her own task to Globex" as="alice" sql={`UPDATE tasks SET org_id = 2 WHERE id = 1;`} expect="ERROR: WITH CHECK blocks moving a row out of your tenant." />
+
+## Permissive vs restrictive policies
+
+Several policies can apply to the same command. How they combine:
+
+- **Permissive** (default): combined with **OR**. Any one of them can let a row in.
+- **Restrictive**: combined with **AND**. Every one must pass, *and* at least one permissive policy must also pass.
+
+Use permissive policies to *grant* access paths ("my org's rows", "rows shared with me") and restrictive ones for *guard rails* that must always hold.
+
+<SqlBlock title="Guard rail: nobody deletes finished work" sql={`CREATE POLICY tenant_delete ON tasks
+  FOR DELETE TO app_member
+  USING (org_id = current_org_id());
+
+CREATE POLICY keep_done_tasks ON tasks
+  AS RESTRICTIVE
+  FOR DELETE TO app_member
+  USING (status <> 'done');`} />
+
+<SqlBlock title="Bob tries to delete a done task, then a todo task" as="bob" sql={`DELETE FROM tasks WHERE id = 3 RETURNING id;  -- done → blocked by restrictive
+DELETE FROM tasks WHERE id = 4 RETURNING id;  -- todo → allowed`} expect="First DELETE returns 0 rows, second returns id 4." />
+
+### Policies can use subqueries and functions
+
+A policy is any boolean SQL expression. Here's a role-aware rule: owners see all of their org's tasks, while plain members see only tasks assigned to them or unassigned ones.
+
+<SqlBlock title="Owner vs member visibility" sql={`DROP POLICY tenant_read ON tasks;
+
+CREATE POLICY tenant_read ON tasks
+  FOR SELECT TO app_member
+  USING (
+    org_id = current_org_id()
+    AND (
+      assignee_id IS NULL
+      OR assignee_id = current_member_id()
+      OR EXISTS (SELECT 1 FROM members m
+                 WHERE m.id = current_member_id() AND m.role = 'owner')
+    )
+  );`} />
+
+<SqlBlock title="Compare Alice (owner) and Bob (member)" as="bob" sql={`SELECT id, title, assignee_id FROM tasks ORDER BY id;`} expect="Bob sees only his tasks plus unassigned ones. Switch to Alice to see all of Acme." />
+
+<Callout type="warn" title="Policies on the table you query inside a policy">
+The `EXISTS (SELECT … FROM members)` above works because `members` has no RLS. If it did, its policies would apply *inside* this policy too, and a policy that queries its own table can recurse forever (`infinite recursion detected in policy`). The fix is to wrap that lookup in a `SECURITY DEFINER` function with a pinned `search_path`. See [Functions & Procedures](/learn/functions-and-procedures).
+</Callout>
+
+## Who bypasses RLS?
+
+| Who | Bypasses? | How to stop it |
+|---|---|---|
+| Superuser | <Yes>always</Yes> | Don't let apps connect as superuser. |
+| Role with `BYPASSRLS` | <Yes /> | Reserve for backup/ETL roles. |
+| Table owner | <Yes>by default</Yes> | `ALTER TABLE … FORCE ROW LEVEL SECURITY` |
+| Everyone else | <No /> | — |
+
+<SqlBlock title="Run as yourself (superuser)" sql={`SELECT count(*) AS visible_to_superuser FROM tasks;`} expect="Every row: superusers are never filtered." />
+
+This is why **the app must not connect as the table owner or a superuser.** A common setup: a `migrator` role owns the tables, and the app logs in as a separate role (like `app_member`) with only `GRANT`ed privileges. See [Roles & Privileges](/learn/roles-and-privileges).
+
+<SqlBlock title="Optional: make RLS apply to the owner too" sql={`ALTER TABLE tasks FORCE ROW LEVEL SECURITY;
+SELECT relname, relrowsecurity, relforcerowsecurity
+FROM pg_class WHERE relname = 'tasks';`} />
+
+## Passing the user's identity to Postgres
+
+Policies need to know *who* is asking. Common patterns:
+
+1. **Custom settings (this lab):** the app runs `SELECT set_config('app.member_id', $1, true)` at the start of each transaction. The third argument `true` makes it **transaction-local** (like `SET LOCAL`), which is essential with connection pools.
+2. **One DB role per end user:** fine for internal tools, but doesn't scale to thousands of users.
+3. **Signed JWT claims:** platforms like Supabase/PostgREST put the verified JWT into a setting (`request.jwt.claims`) and policies call `auth.uid()`. Same idea, standardized.
+
+<SqlBlock static lang="ts" title="Node.js: identity per transaction (pool-safe)" sql={`const client = await pool.connect();
+try {
+  await client.query('BEGIN');
+  // is_local = true → reset automatically at COMMIT/ROLLBACK, so pooled connections never leak identity
+  await client.query("SELECT set_config('app.member_id', $1, true), set_config('app.org_id', $2, true)", [user.id, user.orgId]);
+  const { rows } = await client.query('SELECT * FROM tasks');
+  await client.query('COMMIT');
+} catch (e) {
+  await client.query('ROLLBACK');
+  throw e;
+} finally {
+  client.release();
+}`} />
+
+<Callout type="danger" title="Settings are not secrets">
+Any SQL the user can run can also call `set_config('app.org_id', '2', …)`. That's fine when the **server** builds all SQL. If you expose raw SQL to clients (e.g. PostgREST), derive identity from something they can't forge, such as a verified JWT or `current_user`.
+</Callout>
+
+## Performance tips
+
+- **Index the columns your policies filter on** (`org_id`, `assignee_id`). A policy is just a `WHERE`, so it needs the same indexes a `WHERE` would.
+- **Wrap stable function calls in a sub-select**: `USING (org_id = (SELECT current_org_id()))`. The planner then evaluates it once per query (an *InitPlan*) instead of once per row.
+- **Keep policies simple.** Complex joins in a policy run for every query on the table. Precompute membership into a small table or `SECURITY DEFINER` helper.
+- Check plans with `EXPLAIN` while running *as the app role*; the policy predicate appears in the plan.
+
+<SqlBlock title="See the policy inside the plan" as="alice" sql={`EXPLAIN SELECT * FROM tasks;`} />
+
+## Pitfalls and gotchas
+
+- **Views run as their owner** by default and so skip the caller's RLS. Since **PostgreSQL 15**, create them `WITH (security_invoker = true)` to apply the caller's policies.
+- **`SECURITY DEFINER` functions** run as their owner too, so RLS applies to the *owner*, not the caller.
+- **Constraints can leak existence.** A unique or foreign-key violation tells a user a hidden row exists ("covert channel"). The docs discuss this explicitly.
+- **`TRUNCATE` and referential-integrity checks aren't filtered** by RLS.
+- **`pg_dump`** sets `row_security = off` and fails rather than silently dumping partial data if RLS would filter rows. Run backups as a role that bypasses RLS.
+- **Leaky functions:** the planner won't push non-`LEAKPROOF` functions below security barriers. That's safe, but sometimes slower.
+
+## Cheat sheet
+
+<SqlBlock static title="RLS in 10 lines" sql={`ALTER TABLE t ENABLE ROW LEVEL SECURITY;          -- turn on (default deny)
+ALTER TABLE t FORCE ROW LEVEL SECURITY;           -- apply to owner too
+CREATE POLICY p ON t FOR SELECT TO r USING (...); -- filter reads
+CREATE POLICY p ON t FOR INSERT TO r WITH CHECK (...);
+CREATE POLICY p ON t FOR UPDATE TO r USING (...) WITH CHECK (...);
+CREATE POLICY p ON t AS RESTRICTIVE FOR ALL USING (...); -- AND-ed guard rail
+ALTER POLICY p ON t USING (...);                  -- change
+DROP POLICY p ON t;
+SELECT * FROM pg_policies WHERE tablename = 't';  -- inspect
+ALTER TABLE t DISABLE ROW LEVEL SECURITY;         -- off (policies kept)`} />
+
+## Check yourself
+
+1. RLS is enabled and there are no policies. What does a normal role see? *(Nothing: default deny.)*
+2. Why did Anonymous get an error instead of zero rows? *(No `GRANT SELECT`; privileges come first.)*
+3. What stops Alice from `UPDATE … SET org_id = 2`? *(`WITH CHECK`.)*
+4. Your app connects as the table owner. Does RLS protect you? *(No, unless `FORCE ROW LEVEL SECURITY`.)*

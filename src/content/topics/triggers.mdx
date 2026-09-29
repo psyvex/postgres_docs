@@ -1,0 +1,206 @@
+A trigger is a function Postgres runs **automatically** when something happens to a table. Triggers keep rules and side effects in one place: timestamps, audit trails, derived columns, validation. No application code path can forget them.
+
+<Callout type="fun" title="Mouse traps with a job">
+Set a trap on a table, and whenever a row walks past (INSERT, UPDATE, DELETE), the trap springs and runs your function. **BEFORE** traps can change or stop the row. **AFTER** traps see what actually happened and react.
+</Callout>
+
+<ResetDemo />
+
+## Anatomy of a trigger
+
+Two pieces: a **trigger function** (returns `trigger`) and the **trigger** that attaches it to a table.
+
+<SqlBlock static title="The shape of every trigger" sql={`CREATE FUNCTION my_trigger_fn() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN
+  -- NEW: the row being written (INSERT/UPDATE)    OLD: the previous row (UPDATE/DELETE)
+  -- TG_OP: 'INSERT' | 'UPDATE' | 'DELETE' | 'TRUNCATE'   TG_TABLE_NAME, TG_WHEN, TG_LEVEL …
+  RETURN NEW;  -- BEFORE ROW: the row to write (or NULL to skip). AFTER: ignored.
+END $$;
+
+CREATE TRIGGER my_trigger
+  BEFORE INSERT OR UPDATE ON some_table
+  FOR EACH ROW
+  EXECUTE FUNCTION my_trigger_fn();`} />
+
+<TriggerPipeline />
+
+### The options
+
+| Choice | Options | Rule of thumb |
+|---|---|---|
+| **When** | `BEFORE`, `AFTER`, `INSTEAD OF` *(views only)* | BEFORE to *change/validate* the row, AFTER to *react* to it |
+| **Event** | `INSERT`, `UPDATE [OF col, …]`, `DELETE`, `TRUNCATE` | `UPDATE OF status` fires only when that column is targeted |
+| **Level** | `FOR EACH ROW`, `FOR EACH STATEMENT` | statement-level fires once even for 0 rows |
+| **Condition** | `WHEN (OLD.status IS DISTINCT FROM NEW.status)` | skip the function call entirely when not needed |
+| **Transition tables** | `REFERENCING NEW TABLE AS new_rows` | AFTER STATEMENT triggers can see all changed rows at once |
+
+## Example 1: `updated_at` that's never forgotten
+
+<SqlBlock title="BEFORE UPDATE: stamp the row" sql={`CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER tasks_touch
+  BEFORE UPDATE ON tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION touch_updated_at();`} />
+
+<SqlBlock title="Update without mentioning updated_at" sql={`UPDATE tasks SET status = 'done' WHERE id = 1;
+SELECT id, status, updated_at FROM tasks WHERE id = 1;`} expect="updated_at jumped to the current time." />
+
+## Example 2: clean the data on the way in
+
+A BEFORE trigger can **rewrite** `NEW`, or reject the row by raising an error.
+
+<SqlBlock title="Normalize titles, reject empty ones" sql={`CREATE OR REPLACE FUNCTION clean_task() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.title := btrim(regexp_replace(NEW.title, '\\s+', ' ', 'g'));
+  IF NEW.title = '' THEN
+    RAISE EXCEPTION 'task title cannot be empty';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER tasks_clean
+  BEFORE INSERT OR UPDATE OF title ON tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION clean_task();
+
+INSERT INTO tasks (org_id, project_id, title)
+VALUES (1, 1, '   Paint    the    rocket   ')
+RETURNING id, title;`} expect="title comes back as 'Paint the rocket'." />
+
+<SqlBlock title="Now try an all-spaces title" sql={`INSERT INTO tasks (org_id, project_id, title) VALUES (1, 1, '     ');`} expect="ERROR: task title cannot be empty. The whole INSERT is rolled back." />
+
+<Callout type="tip" title="Constraint or trigger?">
+If a rule can be a `CHECK`, `NOT NULL`, `UNIQUE` or foreign key, **use the constraint**. It's faster, declarative and visible to tools. Reach for triggers when you need to *change* data or look at other rows.
+</Callout>
+
+## Example 3: an audit log (AFTER trigger)
+
+This is the classic. One generic function audits any table, and it's `SECURITY DEFINER` so even roles that can't write `audit_log` directly still produce audit entries.
+
+<SqlBlock title="Generic audit trigger" sql={`CREATE OR REPLACE FUNCTION audit_row() RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = lab, pg_temp
+AS $$
+BEGIN
+  INSERT INTO audit_log (table_name, op, row_id, old_data, new_data, changed_by)
+  VALUES (
+    TG_TABLE_NAME,
+    TG_OP,
+    COALESCE(NEW.id, OLD.id),
+    CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END,
+    CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END,
+    coalesce(current_setting('app.member_id', true), session_user)
+  );
+  RETURN NULL;  -- ignored for AFTER triggers
+END $$;
+
+CREATE TRIGGER tasks_audit
+  AFTER INSERT OR UPDATE OR DELETE ON tasks
+  FOR EACH ROW
+  EXECUTE FUNCTION audit_row();`} />
+
+<SqlBlock title="Bob does some work…" as="bob" sql={`UPDATE tasks SET status = 'doing' WHERE id = 2;
+DELETE FROM tasks WHERE id = 4;`} />
+
+<SqlBlock title="…and the log saw everything" sql={`SELECT id, op, row_id, changed_by,
+       old_data ->> 'status' AS old_status,
+       new_data ->> 'status' AS new_status,
+       changed_at
+FROM audit_log ORDER BY id;`} />
+
+<Callout type="note" title="Only log what changed">
+Add `WHEN (OLD.* IS DISTINCT FROM NEW.*)` on the `UPDATE` trigger to skip no-op updates. For busy tables, keep audit rows small: store a diff or only key columns.
+</Callout>
+
+## Example 4: stop a change with a guard trigger
+
+<SqlBlock title="Finished tasks are frozen" sql={`CREATE OR REPLACE FUNCTION freeze_done() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'task % is done and cannot be changed', OLD.id
+    USING ERRCODE = 'check_violation';
+END $$;
+
+CREATE TRIGGER tasks_freeze_done
+  BEFORE UPDATE ON tasks
+  FOR EACH ROW
+  WHEN (OLD.status = 'done' AND NEW.status = 'done')
+  EXECUTE FUNCTION freeze_done();`} />
+
+<SqlBlock title="Try to rewrite history" sql={`UPDATE tasks SET title = 'Rewrite history' WHERE id = 3;`} expect="ERROR: task 3 is done and cannot be changed. Thanks to the WHEN clause, the function only runs for done rows." />
+
+## Order, recursion and other rules
+
+- **Firing order:** triggers of the same kind fire in **alphabetical order by name**. Name them deliberately (`tasks_10_clean`, `tasks_20_touch`).
+- **BEFORE → constraints → write → AFTER.** AFTER ROW triggers are queued and run at the end of the statement (or at commit, for `DEFERRABLE` constraint triggers).
+- **Returning NULL from a BEFORE ROW trigger skips that row silently.** It's powerful, and confusing if accidental.
+- **Triggers can fire triggers.** An AFTER trigger that updates the same table can loop; guard with `pg_trigger_depth()` or `WHEN` clauses.
+- **Everything is one transaction.** If any trigger raises, the statement and all trigger side effects roll back together.
+- `TRUNCATE` doesn't fire row triggers, only `ON TRUNCATE` statement triggers.
+- Bulk loads: `ALTER TABLE … DISABLE TRIGGER USER` (with care), or `session_replication_role = replica` during logical replication.
+
+<SqlBlock title="Which triggers exist on tasks?" sql={`SELECT tgname AS trigger, tgenabled AS enabled,
+       pg_get_triggerdef(oid) AS definition
+FROM pg_trigger
+WHERE tgrelid = 'lab.tasks'::regclass AND NOT tgisinternal
+ORDER BY tgname;`} />
+
+## Statement triggers with transition tables
+
+Row triggers fire per row. For bulk operations, a statement trigger with a **transition table** sees every changed row at once, which is often far cheaper:
+
+<SqlBlock title="Count status changes per statement" sql={`CREATE OR REPLACE FUNCTION report_bulk_update() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+DECLARE n int;
+BEGIN
+  SELECT count(*) INTO n FROM changed;
+  RAISE NOTICE '% task(s) changed in one statement', n;
+  RETURN NULL;
+END $$;
+
+CREATE TRIGGER tasks_bulk_report
+  AFTER UPDATE ON tasks
+  REFERENCING NEW TABLE AS changed
+  FOR EACH STATEMENT
+  EXECUTE FUNCTION report_bulk_update();
+
+UPDATE tasks SET assignee_id = NULL WHERE org_id = 2 RETURNING id;`} />
+
+## Event triggers (DDL automation)
+
+Regular triggers watch **data**. *Event triggers* watch **DDL** such as `CREATE`, `ALTER`, `DROP`. Use them to enforce conventions (e.g. "every new table must have RLS enabled") or log schema changes. They require superuser and are database-wide.
+
+<SqlBlock static title="Warn when a new table is created without RLS" sql={`CREATE FUNCTION require_rls() RETURNS event_trigger
+  LANGUAGE plpgsql AS $$
+DECLARE obj record;
+BEGIN
+  FOR obj IN SELECT * FROM pg_event_trigger_ddl_commands() WHERE command_tag = 'CREATE TABLE' LOOP
+    RAISE WARNING 'Table % created: remember ENABLE ROW LEVEL SECURITY', obj.object_identity;
+  END LOOP;
+END $$;
+
+CREATE EVENT TRIGGER remind_rls ON ddl_command_end
+  WHEN TAG IN ('CREATE TABLE')
+  EXECUTE FUNCTION require_rls();`} />
+
+## When *not* to use triggers
+
+- **Hidden magic.** New teammates won't know an `UPDATE` also writes three other tables. Document triggers and name them clearly.
+- **Calling external services** (email, HTTP) from a trigger ties your transaction to the network. Instead, write to an outbox table and let a worker process it, or use `LISTEN/NOTIFY`.
+- **Heavy logic per row** on hot tables slows every write.
+
+## Check yourself
+
+1. You want to lowercase emails before saving. BEFORE or AFTER?
+2. What happens if a BEFORE ROW trigger returns `NULL`?
+3. An AFTER trigger raises an exception. Is the original row saved?
+4. Why is the audit function `SECURITY DEFINER` with a pinned `search_path`?

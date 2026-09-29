@@ -1,0 +1,153 @@
+RLS, roles, functions and triggers are layers. Production security means stacking them so that **one mistake is never enough** for an attacker. This page ties everything together and ends with a checklist you can use before go-live.
+
+<Callout type="fun" title="A castle, not a door">
+A castle has a moat, walls, gates, guards and a locked treasury. Attackers who get over the wall still meet a guard. Build your database the same way: network, authentication, roles, RLS, functions, auditing.
+</Callout>
+
+<SecurityHeist />
+
+<ResetDemo />
+
+## Layer 1: network and authentication
+
+- **Never expose 5432 to the internet.** Keep the database in a private network; reach it via the app, a bastion or a VPN.
+- **`pg_hba.conf` decides who may connect, from where, and how.** Be specific: database, user, CIDR, method.
+- **Use `scram-sha-256`** (the default since PG 14). Avoid `md5` and never use `trust` beyond local development.
+- **Require TLS** (`hostssl` lines, `ssl = on`) and have clients verify the server (`sslmode=verify-full`).
+
+<SqlBlock static lang="conf" title="pg_hba.conf: small and explicit" sql={`# TYPE   DATABASE  USER          ADDRESS          METHOD
+local    all       postgres                       peer
+hostssl  appdb     api_service   10.0.1.0/24      scram-sha-256
+hostssl  appdb     migrator      10.0.9.5/32      scram-sha-256
+hostssl  appdb     +app_ro       10.0.2.0/24      scram-sha-256   # + = members of role
+host     all       all           0.0.0.0/0        reject`} />
+
+<Callout type="version" title="Password hashing">
+PG 14 made `password_encryption = scram-sha-256` the default. After upgrading an old cluster, re-set passwords so they're stored as SCRAM, then switch `pg_hba` from `md5` to `scram-sha-256`.
+</Callout>
+
+## Layer 2: the application's role
+
+The single most important production rule:
+
+> **Your application must never connect as a superuser or as the owner of its tables.**
+
+Superusers bypass all privilege checks **and** RLS. Owners bypass RLS (unless `FORCE`) and can `DROP` or `ALTER` their tables. Use the owner/runtime split from [Roles & Privileges](/learn/roles-and-privileges).
+
+<SqlBlock title="Audit: who could bypass your security?" sql={`SELECT rolname,
+       rolsuper      AS superuser,
+       rolbypassrls  AS bypass_rls,
+       rolcreaterole AS create_role,
+       rolcanlogin   AS can_login
+FROM pg_roles
+WHERE (rolsuper OR rolbypassrls OR rolcreaterole)
+  AND rolname NOT LIKE 'pg\\_%';`} expect="Only your admin / break-glass roles should appear here." />
+
+<SqlBlock title="Which tables are owned by whom, and do they have RLS?" sql={`SELECT c.relname AS table_name,
+       pg_get_userbyid(c.relowner) AS owner,
+       c.relrowsecurity AS rls,
+       c.relforcerowsecurity AS rls_forced,
+       (SELECT count(*) FROM pg_policies p
+        WHERE p.schemaname = n.nspname AND p.tablename = c.relname) AS policies
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'lab' AND c.relkind = 'r'
+ORDER BY 1;`} />
+
+## Layer 3: SQL injection
+
+Injection is still the #1 way data leaks. It happens whenever **user input is concatenated into SQL text**. Parameters (`$1`) send the value separately from the query, so it can never change the query's structure.
+
+<InjectionDemo />
+
+<SqlBlock static lang="ts" title="Node.js (pg): never concatenate" sql={`// BAD: vulnerable
+await db.query("SELECT * FROM tasks WHERE title = '" + req.query.q + "'");
+
+// GOOD: parameterized. The driver sends q as data, not SQL
+await db.query('SELECT * FROM tasks WHERE title = $1', [req.query.q]);
+
+// GOOD: dynamic identifiers: allow-list, never user text
+const sortColumn = ({ title: 'title', status: 'status' } as const)[req.query.sort] ?? 'id';`} />
+
+Even with injection, **layers 2 and 4 limit the damage**: a least-privilege role can't `DROP TABLE`, and RLS keeps a `' OR 1=1` confined to the attacker's own tenant.
+
+<SqlBlock title="Setup: turn on RLS for tasks (as superuser)" sql={`ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_read ON tasks;
+CREATE POLICY tenant_read ON tasks FOR SELECT TO app_member
+  USING (org_id = current_org_id());`} />
+
+<SqlBlock title="The same injection, run by Alice's app session" as="alice" sql={`SELECT id, title FROM tasks WHERE title = 'x' OR '1'='1';`} expect="4 Acme rows. The injection 'worked', but RLS kept it inside Alice's tenant." />
+
+## Layer 4: data access rules (RLS)
+
+- Enable RLS on **every table containing tenant or user data**, and prefer `FORCE` so owners are covered too.
+- Default deny: write policies per command (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) and include `WITH CHECK`.
+- Set identity per **transaction** (`set_config(…, true)`) so pooled connections never reuse someone else's identity.
+- Test policies in CI by running queries as each persona, just like this lab does.
+
+## Layer 5: schemas, functions and `search_path`
+
+<Callout type="danger" title="search_path attacks">
+When Postgres resolves an unqualified name like `lower()` or `tasks`, it walks `search_path`. If an untrusted role can `CREATE` in any schema on that path, it can plant an object with the same name. Your code, and especially a `SECURITY DEFINER` function, would then run theirs.
+</Callout>
+
+<SqlBlock title="Does anyone untrusted have CREATE on a schema?" sql={`SELECT n.nspname AS schema,
+       r.rolname AS role,
+       has_schema_privilege(r.oid, n.oid, 'CREATE') AS can_create
+FROM pg_namespace n
+CROSS JOIN pg_roles r
+WHERE n.nspname IN ('public', 'lab')
+  AND r.rolname IN ('app_member', 'app_anon', 'app_admin')
+ORDER BY 1, 2;`} expect="All false. PG 15+ no longer grants CREATE on public to everyone." />
+
+<SqlBlock title="Find SECURITY DEFINER functions without a pinned search_path" sql={`SELECT n.nspname || '.' || p.proname AS function,
+       pg_get_userbyid(p.proowner) AS owner,
+       p.proconfig AS settings
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE p.prosecdef
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND NOT coalesce(array_to_string(p.proconfig, ',') LIKE '%search_path=%', false);`} expect="Should return no rows. Any hit is a potential privilege escalation." />
+
+## Layer 6: auditing and monitoring
+
+- **Audit changes** to sensitive tables with triggers (see [Triggers](/learn/triggers)) or the `pgaudit` extension for statement-level logging.
+- Log connections and failures: `log_connections`, `log_disconnections`, and `log_min_error_statement = error`.
+- Watch **`pg_stat_activity`** for unexpected users, clients and long-running queries.
+- Set **timeouts** on application roles so a runaway query can't hold locks forever.
+
+<SqlBlock static title="Guard rails on the app role" sql={`ALTER ROLE api_service SET statement_timeout = '15s';
+ALTER ROLE api_service SET idle_in_transaction_session_timeout = '60s';
+ALTER ROLE api_service SET lock_timeout = '5s';
+ALTER ROLE api_service CONNECTION LIMIT 50;`} />
+
+## Layer 7: secrets, backups and upgrades
+
+- Keep DB passwords in a **secret manager**, rotate them, and use different credentials per environment and service.
+- **Encrypt backups** and test restores. A backup you've never restored is a hope, not a backup.
+- `pg_dump` needs to read everything: run it as a dedicated role with `pg_read_all_data` + `BYPASSRLS`, not as the app.
+- **Patch minor versions promptly.** Security fixes ship in minor releases. Track [postgresql.org/support/security](https://www.postgresql.org/support/security/).
+- Encrypt sensitive columns at the application level (or with `pgcrypto`) when disk encryption isn't enough.
+
+## Go-live checklist
+
+Tick these off before launch. Ticks aren't saved; copy the list into your release or PR template to keep it.
+
+- [ ] Database is not reachable from the public internet
+- [ ] `pg_hba.conf` uses `hostssl` + `scram-sha-256`, ends with `reject`
+- [ ] App connects as a non-owner, non-superuser role with only needed privileges
+- [ ] `REVOKE CREATE ON SCHEMA public FROM PUBLIC` (verify on upgraded clusters)
+- [ ] RLS enabled (and forced) on every tenant table, with policies for each command
+- [ ] Tenant identity is set per transaction, from a trusted source
+- [ ] All queries are parameterized; dynamic identifiers use allow-lists or `format('%I')`
+- [ ] Every `SECURITY DEFINER` function pins `search_path` and revokes `EXECUTE` from `PUBLIC`
+- [ ] Audit trail on sensitive tables; connection logging on
+- [ ] Statement / idle / lock timeouts on application roles
+- [ ] Backups encrypted, restores tested, minor versions current
+
+## Check yourself
+
+1. An attacker finds an injection bug. Which *other* layers limit what they can do?
+2. Why is connecting as the table owner dangerous even with RLS enabled?
+3. How can `search_path` turn a helpful `SECURITY DEFINER` function into a vulnerability?
+4. What's the difference between `sslmode=require` and `sslmode=verify-full`?

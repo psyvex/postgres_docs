@@ -1,0 +1,187 @@
+Before RLS filters a single row, Postgres asks a simpler question: **is this role allowed to use this object at all?** Roles and privileges are that first gate. Get them right and most attacks can't even reach your data.
+
+<Callout type="fun" title="Keys and key rings">
+A **role** is a key ring. A **privilege** is one key (`SELECT` on `tasks`). Some key rings hang on other key rings (**role membership**). A **login** role is a key ring that's allowed to walk into the building (connect).
+</Callout>
+
+<ResetDemo />
+
+## Roles are users *and* groups
+
+Postgres has a single concept, the **role**. A "user" is just a role with `LOGIN`, and a "group" is a role other roles are members of.
+
+<SqlBlock static title="Creating roles" sql={`CREATE ROLE app_member NOLOGIN;                 -- a group: holds privileges
+CREATE ROLE api LOGIN PASSWORD 'change-me';     -- a user: can connect
+GRANT app_member TO api;                        -- api inherits app_member's privileges
+-- CREATE USER x  ≡  CREATE ROLE x LOGIN`} />
+
+<SqlBlock title="The roles in this lab" sql={`SELECT rolname, rolcanlogin AS login, rolsuper AS superuser,
+       rolinherit AS inherit, rolbypassrls AS bypass_rls
+FROM pg_roles
+WHERE rolname LIKE 'app\\_%' OR rolname = current_user
+ORDER BY rolname;`} />
+
+### Role attributes
+
+| Attribute | Meaning | Advice |
+|---|---|---|
+| `LOGIN` | may connect | only for real users / services |
+| `SUPERUSER` | bypasses **every** check, including RLS | never for applications |
+| `CREATEDB`, `CREATEROLE` | create databases / roles | admins only |
+| `BYPASSRLS` | ignores row-level security | backups, ETL |
+| `INHERIT` | automatically uses privileges of roles it's a member of | default; see below |
+| `CONNECTION LIMIT n` | caps concurrent sessions | useful for service accounts |
+| `VALID UNTIL 'ts'` | password expiry | temporary access |
+
+<Callout type="version" title="PostgreSQL 16 tightened role management">
+Since **PG 16**, `CREATEROLE` no longer lets you manage *every* role, only roles you created or hold `ADMIN OPTION` on. `GRANT role TO member` also gained per-grant `INHERIT` and `SET` options (`GRANT app_admin TO alice WITH INHERIT FALSE, SET TRUE`).
+</Callout>
+
+## Privileges: who may do what to which object
+
+Each object type has its own privileges:
+
+| Object | Privileges |
+|---|---|
+| Database | `CONNECT`, `CREATE`, `TEMPORARY` |
+| Schema | `USAGE` (look inside), `CREATE` (add objects) |
+| Table / view | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, `MAINTAIN` *(PG 17+)* |
+| Column | `SELECT`, `INSERT`, `UPDATE`, `REFERENCES` |
+| Sequence | `USAGE`, `SELECT`, `UPDATE` |
+| Function / procedure | `EXECUTE` |
+
+To read `lab.tasks`, a role needs **all** of: `CONNECT` on the database, `USAGE` on schema `lab`, and `SELECT` on the table. A missing link anywhere gives `permission denied`.
+
+<PrivilegeGrid />
+
+<SqlBlock title="Anonymous can read organizations…" as="anon" sql={`SELECT * FROM organizations;`} />
+
+<SqlBlock title="…but not tasks" as="anon" sql={`SELECT * FROM tasks;`} expect="ERROR: permission denied for table tasks" />
+
+Click the `SELECT` lock for `app_anon` on `tasks` in the grid above, then rerun. Congratulations, you just leaked every task to the internet. Click it again to revoke.
+
+### Column-level privileges
+
+You can grant access to *some* columns. Great for hiding emails, salaries and tokens:
+
+<SqlBlock title="Let anonymous visitors see member names, not emails" sql={`GRANT SELECT (id, name) ON members TO app_anon;`} />
+
+<SqlBlock title="Try both queries as Anonymous" as="anon" sql={`SELECT id, name FROM members;`} expect="Works. Now edit it to SELECT email FROM members, or SELECT *, and run again." />
+
+<Callout type="warn">
+`SELECT *` fails when any column is off-limits. Column privileges are strict; there's no silent "skip the columns I can't see".
+</Callout>
+
+## Membership and inheritance
+
+Grant privileges to **group roles**, then grant groups to login roles. When someone changes teams, you change one membership instead of fifty `GRANT`s.
+
+<SqlBlock title="A support team that can read the audit log" sql={`DO $$ BEGIN
+  CREATE ROLE support_team NOLOGIN;
+EXCEPTION WHEN duplicate_object THEN NULL;  -- roles are cluster-wide; ignore if it exists
+END $$;
+
+GRANT USAGE ON SCHEMA lab TO support_team;
+GRANT SELECT ON audit_log TO support_team;
+GRANT support_team TO app_admin;           -- app_admin is now a member
+
+SET ROLE app_admin;
+SELECT current_user, count(*) AS audit_rows FROM audit_log;`} />
+
+<SqlBlock title="Who is a member of what?" sql={`SELECT member.rolname AS member, grp.rolname AS member_of,
+       m.inherit_option, m.set_option, m.admin_option
+FROM pg_auth_members m
+JOIN pg_roles member ON member.oid = m.member
+JOIN pg_roles grp    ON grp.oid    = m.roleid
+WHERE grp.rolname NOT LIKE 'pg\\_%';`} />
+
+### `current_user` vs `session_user`
+
+`SET ROLE` changes **current_user**, the identity used for privilege checks. **session_user** stays whoever logged in. Audit trails usually want both.
+
+<SqlBlock title="Two identities" sql={`SELECT session_user, current_user;
+SET ROLE app_member;
+SELECT session_user, current_user;`} />
+
+## The `PUBLIC` pseudo-role and safe defaults
+
+`PUBLIC` means "every role, including ones created later". Some defaults grant things to `PUBLIC`:
+
+- `EXECUTE` on **new functions** is granted to `PUBLIC`. Revoke it for sensitive functions.
+- `CONNECT` and `TEMPORARY` on databases.
+- Before **PG 15**, `CREATE` on the `public` schema was granted to everyone. PG 15+ no longer does this, but upgraded clusters may still have it.
+
+<SqlBlock title="Lock down a function" sql={`CREATE OR REPLACE FUNCTION org_budget_total() RETURNS numeric
+  LANGUAGE sql STABLE
+  AS $$ SELECT sum(budget) FROM projects WHERE org_id = current_org_id() $$;
+
+REVOKE EXECUTE ON FUNCTION org_budget_total() FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION org_budget_total() TO app_admin;
+
+SELECT has_function_privilege('app_member', 'org_budget_total()', 'EXECUTE') AS member_can,
+       has_function_privilege('app_admin',  'org_budget_total()', 'EXECUTE') AS admin_can;`} />
+
+## Default privileges: future-proof your grants
+
+`GRANT SELECT ON ALL TABLES IN SCHEMA lab` only covers tables that exist **now**. For tables created later, use `ALTER DEFAULT PRIVILEGES`:
+
+<SqlBlock title="Every future table in lab is readable by app_member" sql={`ALTER DEFAULT PRIVILEGES IN SCHEMA lab
+  GRANT SELECT ON TABLES TO app_member;
+
+CREATE TABLE comments (id int PRIMARY KEY, body text);
+
+SELECT has_table_privilege('app_member', 'lab.comments', 'SELECT') AS inherited_grant;`} />
+
+<Callout type="note">
+Default privileges apply to objects created **by the role that ran the statement** (or the one named in `FOR ROLE`). Run them as your migration/owner role.
+</Callout>
+
+## Predefined roles
+
+Postgres ships roles for common admin needs. Grant these instead of `SUPERUSER`:
+
+| Role | Grants |
+|---|---|
+| `pg_read_all_data` / `pg_write_all_data` *(PG 14+)* | read / write every table (not bypassing RLS) |
+| `pg_monitor` | read monitoring views and stats |
+| `pg_signal_backend` | cancel or terminate other sessions |
+| `pg_maintain` *(PG 17+)* | `VACUUM`, `ANALYZE`, `REINDEX`, `REFRESH MATERIALIZED VIEW` on everything |
+| `pg_use_reserved_connections` *(PG 16+)* | use reserved connection slots |
+
+## A production-grade role layout
+
+<SqlBlock static title="Recommended starting point" sql={`-- 1. Owner: owns schema + tables, runs migrations. Never used by the app at runtime.
+CREATE ROLE app_owner NOLOGIN;
+-- 2. Runtime group: exactly the DML the app needs.
+CREATE ROLE app_rw NOLOGIN;
+GRANT USAGE ON SCHEMA app TO app_rw;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO app_rw;
+ALTER DEFAULT PRIVILEGES FOR ROLE app_owner IN SCHEMA app
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;
+-- 3. Read-only group for analytics / BI.
+CREATE ROLE app_ro NOLOGIN;
+GRANT USAGE ON SCHEMA app TO app_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO app_ro;
+-- 4. Login roles only inherit groups.
+CREATE ROLE api_service LOGIN PASSWORD '...' IN ROLE app_rw;
+CREATE ROLE migrator    LOGIN PASSWORD '...' IN ROLE app_owner;
+-- 5. Remove the footguns.
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON DATABASE mydb FROM PUBLIC;
+GRANT CONNECT ON DATABASE mydb TO app_rw, app_ro, app_owner;`} />
+
+## Inspecting privileges
+
+<SqlBlock title="Who has what on tasks?" sql={`SELECT grantee, string_agg(privilege_type, ', ' ORDER BY privilege_type) AS privileges
+FROM information_schema.role_table_grants
+WHERE table_schema = 'lab' AND table_name = 'tasks'
+GROUP BY grantee ORDER BY grantee;`} />
+
+In `psql` the shortcuts are `\du` (roles), `\dp tasks` (table ACLs) and `\ddp` (default privileges).
+
+## Check yourself
+
+1. Why does a role need `USAGE` on the schema *and* `SELECT` on the table?
+2. You granted `SELECT ON ALL TABLES` last month; today's new table is "permission denied". Why?
+3. What's the difference between `session_user` and `current_user` after `SET ROLE`?
+4. Which is safer for monitoring: `SUPERUSER` or `pg_monitor`?
