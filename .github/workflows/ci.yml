@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push abandons the run before it, so the queue never lags behind the branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # No ANTHROPIC_API_KEY and no database URL: every step below is offline by design.
+      # `verify:lessons` compiles the MDX lessons against PGlite, `test` runs the unit specs,
+      # `typecheck` uses the TS 7 compiler, `lint` parses TS with the aliased TS 6 API.
+      - run: pnpm install --frozen-lockfile
+
+      # Non-fatal: surfaces known high/critical vulnerabilities in the dep tree.
+      # The repo's subject is SQL injection — supply-chain hygiene is part of the teaching mission.
+      - name: Dependency audit
+        run: pnpm audit --audit-level=high
+        continue-on-error: true
+
+      - run: pnpm verify:lessons
+
+      - run: pnpm typecheck
+
+      # Exits 0 with warnings on purpose: the react-hooks rules that report the data-loading
+      # pattern are set to warn, and the count is in this log so the trend is visible.
+      - run: pnpm lint
+
+      - run: pnpm test
+
+      # The production bundle is built here because every other step compiles source, not the
+      # artifact that ships. This is what catches a lesson whose MDX parses for `verify:lessons`
+      # (a regex over the text) and fails for the MDX loader (`expect="…\"…\""` is invalid JSX).
+      # Note this is a *compile* gate only: the browser DB has to be pressed in a real browser,
+      # so the PGlite-on-Turbopack failure in docs/ARCHITECTURE.md stays a manual check.
+      - run: pnpm build
+
+  # Security queries over the app's own source: SQL/command injection sinks, path traversal,
+  # unsafe regex, XSS in the MDX and AI-rendering paths. Findings go to the Security tab as
+  # code scanning alerts, so this reports without gating the merge.
+  #
+  # No build step: CodeQL extracts JavaScript/TypeScript from source directly, and a
+  # `next build` here would need an API key plus a model download for the translator.
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'

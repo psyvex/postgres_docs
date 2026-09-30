@@ -1,0 +1,183 @@
+When something goes wrong — a server crash, a bad migration, a fat-finger delete — you recover from a copy. That copy is either a **base backup** (a point-in-time snapshot of the data files) or a **WAL replay** (the trail of writes since then). Postgres keeps both for a reason: the backup gives you a consistent starting point, and the WAL gives you the path forward.
+
+<Callout type="tip" title="What this lesson can and cannot run">
+This lab is a browser-based Postgres with no filesystem and no second server. `pg_dump`, `pg_basebackup`, streaming replication, and PITR on a real server cannot run here. Those claims are `static` blocks with prose. Everything that *can* run — WAL inspection, the backup API, replication views — runs interactively.
+</Callout>
+
+<ResetDemo />
+
+<PitrTimeline />
+
+### The WAL: every write, in order
+
+Postgres writes every change to the **Write-Ahead Log** before it touches the table. WAL has one job: if the server crashes, replay it and rebuild the table state. That same log is the foundation of every backup, replica, and point-in-time recovery.
+
+<SqlBlock title="The current WAL position" sql={`SELECT pg_current_wal_lsn() AS lsn;`} expect="An LSN is a 64-bit counter written as two 32-bit hex numbers separated by a slash. The left number is the WAL segment file; the right is the byte offset within it." />
+
+<SqlBlock title="Which segment file the LSN lives in" sql={`SELECT pg_walfile_name(pg_current_wal_lsn()) AS segment,
+       pg_size_pretty(setting::bigint) AS segment_size
+FROM pg_settings WHERE name = 'wal_segment_size';`} expect="`pg_walfile_name` maps an LSN to a segment filename. `wal_segment_size` is 16 MB — Postgres closes and rotates to a new segment file every 16 MB." assert={[{ rows: 1 }]} />
+
+<SqlBlock title="The volume of WAL written since init" sql={`SELECT wal_records, wal_fpi, wal_bytes,
+       pg_size_pretty(wal_bytes) AS human,
+       stats_reset
+FROM pg_stat_wal;`} expect="`wal_records` is the count of individual WAL records. `wal_fpi` (full-page images) is how many times an entire heap page was written before a partial change — the reason `full_page_writes = on` protects against partial-page writes after a crash." assert={[{ rows: 1 }]} />
+
+<Callout type="note" title="WAL is not a transaction log">
+WAL records individual page changes, not SQL statements. An `UPDATE` that modifies 10 rows in a heap page writes one full-page image and a handful of change records. An `INSERT` that fills a page writes the full page and a record of the new line's location. `pg_wal_lsn_diff` gives you the byte distance between two LSNs — use it to estimate how much WAL a workload will produce.
+</Callout>
+
+### The base backup API: marking the WAL boundaries
+
+`pg_basebackup` is a convenience tool. Underneath it calls `pg_backup_start` and `pg_backup_stop` — the functions that mark the exact WAL LSN where the backup begins and ends. Without those marks, you cannot replay WAL to reach a consistent point.
+
+<SqlBlock title="Start a backup: what pg_backup_start returns" sql={`SELECT pg_backup_start('before-schema-change') AS start_lsn;`} expect="A lone pg_lsn. This is the WAL position at the moment the backup started. Write it down — or store the backup_label file — because it is the replay starting point." assert={[{ rows: 1 }]} />
+
+<SqlBlock title="The backup_label: what pg_backup_stop writes" sql={`SELECT lsn,
+       split_part(labelfile, E'\\n', 1) AS wal_location,
+       split_part(labelfile, E'\\n', 3) AS backup_method,
+       split_part(labelfile, E'\\n', 6) AS label
+FROM pg_backup_stop();`} expect="`pg_backup_stop()` returns the stop LSN and the full backup_label file text — the same file `pg_basebackup` writes to the data directory. `START WAL LOCATION` is the LSN recorded by `pg_backup_start`. `BACKUP METHOD: streamed` means this backup was taken via the replication protocol. The label field echoes the string you passed to `pg_backup_start`." assert={[{ rows: 1 }]} />
+
+<Callout type="warn" title="Without the backup_label, PITR has no starting point">
+`pg_backup_start` and `pg_backup_stop` are not optional metadata calls. They write the WAL boundaries into the data directory. A restore from a base backup that arrived without those marks has no idea how much WAL to replay — the recovery window is undefined.
+</Callout>
+
+<SqlBlock title="pg_ls_dir: what is inside pg_wal" sql={`SELECT pg_ls_dir FROM pg_ls_dir('pg_wal')
+WHERE pg_ls_dir LIKE '0000%' ORDER BY 1;`} expect="WAL segment files (named 24-hex-digit, e.g. 000000010000000000000003). `pg_ls_dir` returns rows with a column named `pg_ls_dir` — not a composite type. The `archive_status/` and `summaries/` subdirectories are not shown here (the WHERE filters them out)." assert={[{ rowsAtLeast: 1 }]} />
+
+### Archiving: shipping WAL somewhere durable
+
+WAL segments roll over, but the log matters until the base backup is safely stored. **Archiving** copies each completed segment to durable storage (S3, NFS, a file server) so it can be replayed after a crash.
+
+<SqlBlock title="Archiving is off — the archiver view" sql={`SELECT archived_count, last_archived_wal,
+       failed_count, last_failed_wal, stats_reset
+FROM pg_stat_archiver;`} expect="`archived_count = 0` and `last_archived_wal = null` — archiving has never run (`archive_mode = off`). In a real deployment, `last_archived_wal` is the segment filename of the most recent successful archive — use `pg_wal_lsn_diff(pg_current_wal_lsn(), last_archived_wal::pg_lsn)` to compute the data-at-risk gap." assert={[{ rows: 1, firstCell: 0 }]} />
+
+<SqlBlock title="The archive configuration" sql={`SHOW archive_mode;
+SHOW archive_command;
+SHOW archive_timeout;`} expect="`archive_mode = off`. `archive_command = (disabled)` — the `(disabled)` text is the literal stored value, not a null or empty string. `archive_timeout = 0` means segments are only archived when they fill, never on a timer." />
+
+<SqlBlock static title="Enabling archiving (requires restart)" sql={`-- postgresql.conf
+archive_mode = on
+archive_command = 'aws s3 cp %p s3://my-bucket/wal/%f'
+archive_timeout = 600    -- force a WAL switch every 10 minutes
+
+-- Then reload:
+SELECT pg_reload_conf();
+SELECT pg_rotate_logfile();  -- test the command immediately`} expect="`archive_timeout` trades WAL bandwidth for a smaller recovery window. With archiving off, your recovery point is the last completed full WAL segment — up to 16 MB of writes." />
+
+### Point-in-time recovery
+
+Combine a base backup with archived WAL, point the server at a timestamp, and you have **PITR**:
+
+<SqlBlock static title="PITR configuration (requires a real server)" sql={`-- postgresql.conf on the restore server
+restore_command = 'aws s3 cp s3://my-bucket/wal/%f %p'
+recovery_target_time = '2026-09-30 14:30:00+00'
+recovery_target_action = 'promote'
+
+-- Postgres also creates a recovery.signal file when in PITR mode.
+-- The server will not start normally while that file exists.
+-- PITR replays WAL from the base backup's START_WAL LSN to the target time,
+-- then promotes the server to accept connections.`} expect="The `recovery.signal` file is the presence flag. Without a base backup's START_WAL LSN (from the backup_label), replaying WAL into an empty data directory produces garbage." />
+
+<Callout type="warn" title="PITR needs a base backup first — and its LSN">
+PITR is not a magic wand. The recipe is: take a base backup (and record its START_WAL LSN), archive the WAL, then after a crash copy the base backup to a fresh data directory, set `restore_command`, `recovery_target_time`, and start the server. Skip the backup and the LSN, and WAL replay has no starting point.
+</Callout>
+
+### Physical replication: streaming WAL to a standby
+
+A **physical replica** gets an exact block-for-block copy of the data directory. It follows the primary by consuming WAL — either by restoring archived segments or by receiving them directly over the replication protocol.
+
+<SqlBlock title="Replication settings: the capacity" sql={`SELECT name, setting, context FROM pg_settings
+WHERE name IN ('wal_level','max_wal_senders','max_replication_slots',
+               'wal_keep_size','max_slot_wal_keep_size','archive_mode')
+ORDER BY name;`} expect="`wal_level = replica` (postmaster context: requires restart to change). `max_wal_senders = 10` and `max_replication_slots = 10` — the server can accept 10 replicas and track their progress. `max_slot_wal_keep_size = -1` means no limit on WAL a slot can reserve; a dead replica can fill the primary's disk. `archive_mode = off` (postmaster context)." assert={[{ rows: 6 }]} />
+
+<SqlBlock title="No replica is connected right now" sql={`SELECT count(*) AS replicas FROM pg_stat_replication;`} expect="0 replicas — `pg_stat_replication` is empty. In production this view shows each replica's `sent_lsn`, `write_lsn`, `flush_lsn`, `replay_lsn`, `sync_state`, and `write_lag`." assert={[{ rows: 1, firstCell: 0 }]} />
+
+
+<Callout type="note" title="Replication slots: keeping WAL safe for laggy replicas">
+Without a replication slot, the primary discards WAL segments as soon as the replica confirms it has written them (`flush_lsn`). If a replica falls behind and the primary recycles those segments, the replica has a gap it can never fill. A slot with `wal_status = 'reserved'` keeps WAL until the slot's `restart_lsn` has been consumed — even if the replica is offline for days.
+</Callout>
+
+<SqlBlock title="Create a physical replication slot" sql={`SELECT pg_create_physical_replication_slot('standby_slot', true);
+SELECT slot_name, slot_type, active, wal_status, restart_lsn
+FROM pg_replication_slots
+WHERE slot_name = 'standby_slot';`} expect="`immediately_reserve = true` reserves WAL at the current flush point, not when a replica connects. `wal_status = 'reserved'` means Postgres will not recycle WAL past the slot's `restart_lsn`. `active = false` — no replica has connected to this slot." assert={[{ rows: 1, firstCell: 'standby_slot' }]} />
+
+<SqlBlock title="Drop the slot when the replica no longer needs it" sql={`SELECT pg_drop_replication_slot('standby_slot');
+SELECT count(*) AS slots FROM pg_replication_slots;`} expect="The slot is dropped and the WAL it reserved is released. The count is 0 — the slot is gone. Dropping a slot that does not exist fails: `replication slot 'standby_slot' does not exist`." assert={[{ rows: 1, firstCell: 0 }]} />
+
+<SqlBlock title="Dropping a slot that is not there" sql={`SELECT pg_drop_replication_slot('standby_slot');`} expect="ERROR: the slot was dropped in the previous block, so this second drop hits the canonical error. A real runbook checks `pg_replication_slots` first before dropping." assert={[{ error: 'replication slot "standby_slot" does not exist' }]} />
+
+<SqlBlock static title="Setting up a physical replica (requires two servers)" sql={`-- On the PRIMARY:
+-- 1. Create a slot so WAL is kept even if the replica falls behind.
+SELECT * FROM pg_create_physical_replication_slot('standby_slot');
+
+-- 2. Grant replication access.
+-- pg_hba.conf:
+--   host replication all 10.0.0.2/32 scram-sha-256
+
+-- 3. Take the base backup and stream it to the standby.
+-- pg_basebackup -h primary-host -U repluser -D /var/lib/postgresql/standby
+--   --slot=standby_slot --checkpoint=fast -R -P
+-- The -R flag writes standby.signal into the data directory.
+
+-- 4. Configure the standby to connect.
+-- postgresql.conf on standby:
+--   primary_conninfo = 'host=10.0.0.1 port=5432 user=repluser application_name=standby1'
+--   primary_slot_name = 'standby_slot'`} expect="The `standby.signal` file is the presence flag — Postgres will not start normally while it exists. `primary_conninfo` tells the standby where to connect. The slot name ensures WAL is kept even if the replica is offline." />
+
+### Logical replication: row-level pub/sub
+
+Physical replication copies the whole database. **Logical replication** copies data at row granularity using a publish/subscribe model — one primary can replicate specific tables to multiple subscribers of different versions.
+
+<SqlBlock title="Logical replication needs wal_level = logical" sql={`SHOW wal_level;`} expect="`replica` — logical decoding is not enabled. `wal_level = logical` is required to decode WAL into individual row changes." />
+
+<SqlBlock title="Create a publication" sql={`DROP PUBLICATION IF EXISTS lesson_pub;
+CREATE PUBLICATION lesson_pub FOR ALL TABLES;
+SELECT pubname, puballtables, pubinsert, pubupdate, pubdelete
+FROM pg_publication
+WHERE pubname = 'lesson_pub';`} expect="`puballtables = true` and all individual operation flags are true. `pg_publication_tables` is empty for a `FOR ALL TABLES` publication — it publishes future tables automatically, including tables created after the publication." assert={[{ rows: 1, firstCell: 'lesson_pub' }]} />
+
+<SqlBlock static title="Create a subscription (requires a remote primary)" sql={`CREATE SUBSCRIPTION lesson_sub
+  CONNECTION 'host=primary-host port=5432 user=postgres dbname=postgres'
+  PUBLICATION lesson_pub;`} expect="In a real deployment this creates a replication connection to the publisher. In this lab it fails: the in-process server has no libpq to connect out. The subscription row is inserted, and the apply worker starts and fails to connect, leaving `pid = null` in `pg_stat_subscription`." />
+
+<SqlBlock static title="pg_stat_subscription: the subscription state view" sql={`SELECT subname, pid, relid, received_lsn, last_msg_receipt_time
+FROM pg_stat_subscription
+WHERE subname = 'lesson_sub';`} expect="In a real deployment with a connected publisher: `pid` is the apply-worker PID, `received_lsn` is the last WAL position received. `pid = null` with a non-null `subname` means the subscription exists in the catalogue but the worker has not connected." />
+
+<Callout type="note" title="Physical vs logical: when to use which">
+Use **physical replication** when you need an exact copy of the database — unlogged tables, large objects, sequence state, and anything not managed by logical replication. The standby is a black box. Use **logical replication** when you want to replicate specific tables, merge multiple databases, replicate across Postgres versions (subscriber can be newer than publisher), or selectively read from replicas.
+</Callout>
+
+## Cheat sheet
+
+| Concept | Key fact |
+|---|---|
+| WAL LSN | 64-bit counter; `pg_wal_lsn_diff(a, b)` = bytes between positions |
+| `pg_backup_start` | Returns the WAL LSN where the backup began |
+| `pg_backup_stop` | Returns the stop LSN and the backup_label file text |
+| `pg_stat_archiver` | Shows archive counts; `last_archived_wal = null` means archiving is off |
+| `archive_command` | Literal `(disabled)` string, not null, when archiving is off |
+| `archive_timeout` | Forces a WAL switch after N seconds; trades bandwidth for smaller RPO |
+| `wal_level = replica` | Required minimum for physical replication; logical needs `= logical` |
+| `pg_replication_slots` | Tracks replica progress; `wal_status = 'reserved'` prevents WAL recycling |
+| `pg_stat_replication` | Shows each replica's sent/write/flush/replay LSN and sync state |
+| `pg_stat_subscription` | Shows subscription worker PID and last-received LSN |
+| `pg_is_in_recovery()` | `false` on primary; `true` on standby — gates some read-only functions |
+
+<SqlBlock title="Final check: are we a primary or a standby?" sql={`SELECT pg_is_in_recovery();`} expect="`false` — this lab is a primary. The `true` value is what a restored standby returns." assert={[{ rows: 1, firstCell: false }]} />
+
+## Check yourself
+
+1. Your server crashes. You have a base backup and 3 hours of WAL archives. What are the two things you must configure to start PITR?
+2. `pg_stat_archiver.last_archived_wal = null`. What does that tell you about your RPO?
+3. A replica falls 2 WAL segments behind the primary. The primary recycles those segments. What happens to the replica?
+4. Why does a physical replica need the same Postgres *version* as the primary, but a logical replica does not?
+5. What does `pg_backup_start` return, and why is it not optional for PITR?
+6. `archive_timeout = 0` — what is the maximum gap between a data change and it being safely archived?
+7. A publication created with `FOR ALL TABLES` starts publishing all existing tables. Does it also publish tables created later?
+8. A physical replication slot is created with `immediately_reserve = true`. What does that mean for WAL retention on the primary?

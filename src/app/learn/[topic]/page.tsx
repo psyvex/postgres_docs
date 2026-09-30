@@ -9,17 +9,26 @@ import { OnThisPage } from '@/components/learn/OnThisPage';
 import { MiniSchema } from '@/components/learn/MiniSchema';
 import { LessonTranslator } from '@/components/learn/LessonTranslator';
 import { LessonAssistant } from '@/components/learn/LessonAssistant';
+import { LessonProgress } from '@/components/learn/LessonProgress';
+import { BreakLessonHeader } from '@/components/learn/BreakLessonHeader';
+import { lessonMeta as lessonDocMeta } from '@/lib/site-meta';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-/** Hash + size of the lesson source: versions cached translations and sizes the progress bar. */
+/** Hash + size of the lesson source: versions cached translations and sizes the progress bar.
+ *  Also counts runnable blocks with `assert=` so the progress bar can show "3 of 8 checks solved". */
 function lessonMeta(slug: string) {
   try {
     const raw = readFileSync(path.join(process.cwd(), 'src/content/topics', `${slug}.mdx`), 'utf8');
-    return { version: createHash('sha1').update(raw).digest('hex').slice(0, 12), length: raw.length };
+    const assertCount = (raw.match(/<SqlBlock(?![^>]*\bstatic\b)[^>]*\bassert=/g) ?? []).length;
+    return {
+      version: createHash('sha1').update(raw).digest('hex').slice(0, 12),
+      length: raw.length,
+      assertCount,
+    };
   } catch {
-    return { version: 'dev', length: 20_000 };
+    return { version: 'dev', length: 20_000, assertCount: 0 };
   }
 }
 import { Icon, type IconName } from '@/components/icons';
@@ -32,7 +41,10 @@ export function generateStaticParams() {
 
 export async function generateMetadata({ params }: { params: Promise<{ topic: string }> }): Promise<Metadata> {
   const topic = getTopic((await params).topic);
-  return { title: topic?.title, description: topic?.tagline };
+  if (!topic) return {};
+  // Title, tagline, canonical and the share-card copy all come from the registry,
+  // which is the same source the page body and the OG image render from.
+  return lessonDocMeta(topic.title, topic.tagline, topic.slug);
 }
 
 export default async function TopicPage({ params }: { params: Promise<{ topic: string }> }) {
@@ -51,23 +63,33 @@ export default async function TopicPage({ params }: { params: Promise<{ topic: s
       <TopicSidebar active={slug} />
 
       <main className="min-w-0 px-4 py-8 sm:px-8 xl:px-12">
-        <header className="mb-8">
+        <header className="mb-4">
           <div className="flex items-center gap-4">
             <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-brand-soft text-brand shadow-card">
               <Icon name={topic.icon} size={32} />
             </span>
             <h1 className="font-display text-4xl font-extrabold leading-tight tracking-tight">{topic.title}</h1>
           </div>
-          <div className="mt-4 flex flex-wrap items-center gap-3 text-xs font-semibold text-muted">
-            <span className="rounded-full bg-brand-soft px-2.5 py-1 text-brand">{topic.track}</span>
-            {topic.minutes && (
-              <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {topic.minutes} min</span>
-            )}
-            <span>Targets PostgreSQL 18</span>
-          </div>
         </header>
 
-        <LessonTranslator slug={slug} version={source.version} sourceLength={source.length}>
+        {topic.status === 'break' && topic.challengeCount != null
+          ? <BreakLessonHeader slug={slug} totalChecks={source.assertCount} challengeTotal={topic.challengeCount} />
+          : <LessonProgress slug={slug} totalChecks={source.assertCount} />
+        }
+        <LessonTranslator
+          slug={slug}
+          version={source.version}
+          sourceLength={source.length}
+          meta={
+            <>
+              <span className="rounded-full bg-brand-soft px-2.5 py-1 text-brand">{topic.track}</span>
+              {topic.minutes && (
+                <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {topic.minutes} min</span>
+              )}
+              <span>Targets PostgreSQL 18</span>
+            </>
+          }
+        >
           <Content />
         </LessonTranslator>
         <LessonAssistant slug={slug} title={topic.title} />

@@ -7,6 +7,11 @@ import { FunctionMachine } from '@/components/animations/FunctionMachine';
 import { TriggerPipeline } from '@/components/animations/TriggerPipeline';
 import { SecurityHeist } from '@/components/animations/SecurityHeist';
 import { InjectionDemo } from '@/components/animations/InjectionDemo';
+import { ScanRace } from '@/components/animations/ScanRace';
+import { MvccExplainer } from '@/components/animations/MvccExplainer';
+import { PartitionPruner } from '@/components/animations/PartitionPruner';
+import { PitrTimeline } from '@/components/animations/PitrTimeline';
+import { JsonTree } from '@/components/animations/JsonTree';
 import { ResetDemo } from '@/components/docs/ResetDemo';
 import { No, Yes } from '@/components/docs/Mark';
 import { Icon } from '@/components/icons';
@@ -28,6 +33,11 @@ const components: MDXComponents = {
   TriggerPipeline,
   SecurityHeist,
   InjectionDemo,
+  ScanRace,
+  MvccExplainer,
+  PartitionPruner,
+  PitrTimeline,
+  JsonTree,
   ResetDemo,
   Icon,
   Yes,

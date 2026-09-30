@@ -1,0 +1,341 @@
+jsonb stores JSON documents as binary trees — searchable without loading the whole thing into application memory. This lesson covers the storage model, the operator set, path navigation, modification, and the GIN indexes that make containment queries fast.
+
+<Callout type="fun" title="The pile vs the tree">
+A `text` column holding JSON is a pile: Postgres sees characters, not structure. A `jsonb` column is a parsed tree: Postgres sees keys, values, nesting depth. The `b` stands for **binary** — not a string that happens to look like JSON, but an optimised binary representation that Postgres can navigate.
+</Callout>
+
+<ResetDemo />
+
+## What jsonb stores
+
+`json` preserves the exact text you wrote. `jsonb` parses it on insert and stores the canonical binary form.
+
+<SqlBlock title="jsonb canonicalises on insert" sql={`SELECT
+  ('{"b":1,"a":2}'::jsonb)::text        AS jsonb_sorted,
+  ('{"b":1,"a":2}'::json)::text          AS json_preserved;
+`} assert={[{ rows: 1, columns: ['jsonb_sorted', 'json_preserved'] }]} />
+
+The jsonb result has keys sorted: `{"a":2,"b":1}`. The json result keeps input order. Canonicalisation enables fast comparisons — equality of two jsonb values is a single binary comparison, not a parse-and-compare loop.
+
+<SqlBlock title="Numbers and whitespace are normalised" sql={`SELECT ('{"x":1.0,"y":1}'::jsonb)::text AS numbers,
+       ('{ "a" : 1 }'::jsonb)::text       AS whitespace;
+`} assert={[{ firstCell: '{"x": 1.0, "y": 1}' }]} />
+
+jsonb preserves numeric scale in the text form — `1.0` stays `1.0` — but `1.0` and `1` compare as equal numbers. Whitespace and key order are discarded entirely. This is why jsonb comparisons are exact and fast.
+
+<SqlBlock title="Duplicate keys: last value wins" sql={`SELECT ('{"a":1,"a":2}'::jsonb)::text AS deduped;
+`} expect='Duplicate "a" key collapsed to the last value: {"a":2}' assert={[{ firstCell: '{"a": 2}' }]} />
+
+## Reading: the arrow operators
+
+Four operators navigate into a jsonb tree. `->` returns jsonb (so you can chain); `->>` returns text.
+
+<SqlBlock title="Extract an object key" sql={`SELECT ('{"a":{"b":42}}'::jsonb -> 'a')::text  AS obj,
+       '{"a":{"b":42}}'::jsonb ->> 'a'              AS text;
+`} assert={[{ firstCell: '{"b": 42}' }]} />
+
+Both return the subtree under `"a"`. The text version is the serialised JSON string — notice the quotes around the inner object in the output.
+
+<SqlBlock title="Nested path with #>" sql={`SELECT ('{"a":{"b":{"c":1}}}'::jsonb #> '{a,b,c}')::text  AS path,
+       '{"a":{"b":{"c":1}}}'::jsonb #>> '{a,b,c}'             AS path_text;
+`} assert={[{ firstCell: '1' }]} />
+
+`#>` descends by text-path and returns jsonb; `#>>` returns text. `->` with a text key and `#>` with a path both work on objects. For arrays, use an integer index.
+
+<SqlBlock title="Array index is 0-based" sql={`SELECT ('[10,20,30]'::jsonb -> 1)::text AS second,
+       '[10,20,30]'::jsonb ->> 1           AS second_text;
+`} assert={[{ firstCell: '20' }]} />
+
+`-> 1` on an array is integer-key access, not an operator. Postgres resolves the integer key into the array element at that position.
+
+## Containment: the @> and ? operators
+
+These are the operators that make jsonb useful for document queries. They are the reason GIN indexes can accelerate jsonb columns.
+
+<SqlBlock title="@> — does the document contain this subdocument?" sql={`SELECT '{"a":1,"b":2}'::jsonb @> '{"a":1}'::jsonb AS has_a;
+`} assert={[{ firstCell: 'true' }]} />
+
+This asks: "does the left document contain the right one as a subdocument?" Works for nested objects too.
+
+<SqlBlock title="? — does the document have this key?" sql={`SELECT '{"a":1,"b":2}'::jsonb ? 'a' AS has_key;
+`} assert={[{ firstCell: 'true' }]} />
+
+<SqlBlock title="?| and ?& — any/all keys" sql={`SELECT '{"a":1,"b":2}'::jsonb ?| array['a','z'] AS has_any,
+       '{"a":1,"b":2}'::jsonb ?& array['a','b']  AS has_all;
+`} assert={[{ firstCell: 'true' }]} />
+
+`?|` is true if the document has *any* of the listed keys. `?&` requires *all* of them.
+
+<SqlBlock title="Array containment" sql={`SELECT '{"tags":["a","b","c"]}'::jsonb @> '{"tags":["b"]}'::jsonb AS found;
+`} assert={[{ firstCell: 'true' }]} />
+
+The subdocument `{tags:["b"]}` is contained in `{tags:["a","b","c"]}` because array containment is a subset test: all elements in the right array appear in the left, in any order.
+
+## Building documents
+
+`jsonb_build_object` and `jsonb_build_array` assemble documents from SQL columns. `to_jsonb` turns a row into a jsonb object.
+
+<SqlBlock title="Build an object from arguments" sql={`SELECT (jsonb_build_object(
+  'name',    'Alice',
+  'age',     30,
+  'active',  true
+))::text AS person;
+`} assert={[{ firstCell: '{"age": 30, "name": "Alice", "active": true}' }]} />
+
+<SqlBlock title="jsonb_build_array — mixed types allowed" sql={`SELECT jsonb_build_array(1, 'two', true, NULL)::text AS mixed;
+`} assert={[{ firstCell: '[1, "two", true, null]' }]} />
+
+<SqlBlock title="Aggregate rows into a JSON array" sql={`SELECT jsonb_agg(t.* ORDER BY id)
+FROM (VALUES (1,'Write lesson'),(2,'Ship it')) t(id, title);
+`} assert={[{ rows: 1, columns: ['jsonb_agg'] }]} />
+
+`ORDER BY` inside `jsonb_agg` controls the output order. `json_agg` is the same but returns json (text).
+
+<SqlBlock title="Convert a row to jsonb with to_jsonb" sql={`SELECT to_jsonb(t)::text
+FROM (SELECT 1 AS id, 'Alice' AS name, true AS active) t;
+`} assert={[{ firstCell: '{"id": 1, "name": "Alice", "active": true}' }]} />
+
+`to_jsonb(row)` converts a table row. The column names become keys; the values become JSON values.
+
+## Expanding: jsonb_each and jsonb_array_elements
+
+These functions turn a jsonb document into rows — the bridge between the document world and the relational world.
+
+<SqlBlock title="Turn every key/value pair into a row" sql={`SELECT key, value
+FROM jsonb_each('{"a":1,"b":2}'::jsonb)
+ORDER BY key;
+`} assert={[{ rows: 2, columns: ['key', 'value'] }]} />
+
+`jsonb_each` returns two columns: `key` (text) and `value` (jsonb). This is how you "unpivot" a document into a table so you can aggregate, filter, or join it.
+
+<SqlBlock title="Expand an array into rows" sql={`SELECT value
+FROM jsonb_array_elements('[10,20,30]'::jsonb);
+`} assert={[{ rows: 3, columns: ['value'] }]} />
+
+<SqlBlock title="Chaining: expand an array inside each object key" sql={`SELECT jsonb_array_elements(body -> 'tags') AS tag
+FROM (SELECT '{"title":"hello","tags":["pg","jsonb"]}'::jsonb AS body) docs;
+`} assert={[{ rows: 2, columns: ['tag'] }]} />
+
+`body -> 'tags'` extracts the array, then `jsonb_array_elements` expands it into rows.
+
+## Modifying documents
+
+None of these functions mutate the original — they return a new document. Postgres applies them with `UPDATE ... SET column = jsonb_set(...)`.
+
+<SqlBlock title="jsonb_set — add or replace a key by path" sql={`SELECT jsonb_set(
+  '{"title":"hello"}'::jsonb,
+  '{author}',
+  '"Alice"'
+)::text AS updated;
+`} assert={[{ firstCell: '{"title": "hello", "author": "Alice"}' }]} />
+
+The third argument is a jsonb literal — wrap it in single quotes for text. To insert into an array, pass a fourth argument `true` (allow insertion beyond array bounds).
+
+<SqlBlock title="|| — merge two objects (right wins on key conflict)" sql={`SELECT ('{"title":"hello"}'::jsonb || '{"author":"Alice"}'::jsonb)::text AS merged;
+`} assert={[{ firstCell: '{"title": "hello", "author": "Alice"}' }]} />
+
+<SqlBlock title="|| — append to an array" sql={`SELECT ('[1,2]'::jsonb || '[3,4]'::jsonb)::text AS appended;
+`} assert={[{ firstCell: '[1, 2, 3, 4]' }]} />
+
+<SqlBlock title="- key — delete a key" sql={`SELECT ('{"a":1,"b":2}'::jsonb - 'a')::text AS deleted;
+`} assert={[{ firstCell: '{"b": 2}' }]} />
+
+<SqlBlock title="#- — delete by path" sql={`SELECT ('{"user":{"name":"Alice","email":"a@b.com"}}'::jsonb #- '{user,email}')::text AS path_deleted;
+`} assert={[{ firstCell: '{"user": {"name": "Alice"}}' }]} />
+
+<SqlBlock title="jsonb_insert — insert into array at a position" sql={`SELECT jsonb_insert('[1,2,3]'::jsonb, '{1}', '99')::text AS inserted;
+`} assert={[{ firstCell: '[1, 99, 2, 3]' }]} />
+
+The path `'{1}'` means position 1 in the array (0-based). The element shifts right.
+
+<Callout type="note" title="jsonb_strip_nulls removes null values">
+`SELECT jsonb_strip_nulls('{"a":null,"b":1}'::jsonb)` → `{"b":1}`. Useful when building responses: null values in stored documents are often intentional placeholders, not intended output.
+</Callout>
+
+## SQL/JSON path
+
+`@@` tests a path expression. `jsonb_path_query` returns matched values. `jsonb_path_exists` returns true/false.
+
+<SqlBlock title="Does any array element satisfy the predicate?" sql={`SELECT '{"items":[{"price":10},{"price":25},{"price":8}]}'::jsonb
+       @@ '$.items[*].price > 20' AS has_expensive;
+`} assert={[{ firstCell: 'true' }]} />
+
+The path walks every `items` element, reads its `price`, and tests the comparison. One match is enough — the result is a boolean.
+
+<SqlBlock title="Return matching elements as rows" sql={`SELECT jsonb_path_query(
+  '{"items":[{"price":10},{"price":25}]}'::jsonb,
+  '$.items[*] ? (@.price > 20)'
+) AS expensive;
+`} assert={[{ rows: 1, columns: ['expensive'] }]} />
+
+Each matched element becomes a row with a jsonb value — ready for aggregation or further processing.
+
+## Querying a real table
+
+Let's load a table of documents and write some queries against it.
+
+<SqlBlock title="Create a document store" sql={`CREATE TABLE docs (
+  id   serial PRIMARY KEY,
+  body jsonb NOT NULL
+);
+
+INSERT INTO docs (body) VALUES
+  ('{"title":"Architecture","tags":["postgres","performance"],"score":9}'),
+  ('{"title":"JSONB Guide","tags":["postgres","jsonb"],"score":8}'),
+  ('{"title":"Rust Intro","tags":["rust"],"score":7}'),
+  ('{"title":"Postgres Tuning","tags":["postgres","performance"],"score":10}');
+`} assert={[{ affected: 4 }]} />
+
+<SqlBlock title="Find documents tagged 'jsonb'" sql={`SELECT id, body ->> 'title' AS title
+FROM docs
+WHERE body @> '{"tags":["jsonb"]}';
+`} assert={[{ rows: 1, firstCell: '2' }]} />
+
+`body @> '{"tags":["jsonb"]}'` asks: does the tags array contain "jsonb"? This uses a containment check — a GIN index can accelerate it.
+
+<SqlBlock title="Projects with score >= 8" sql={`SELECT body ->> 'title' AS title
+FROM docs
+WHERE (body -> 'score')::int >= 8
+ORDER BY (body -> 'score')::int DESC;
+`} assert={[{ rows: 3, columns: ['title'] }]} />
+
+`body -> 'score'` returns jsonb — cast it to `int` for comparison. The `::int` cast on the left side of the comparison is required because jsonb numbers are not comparable with SQL integers without conversion.
+
+<SqlBlock title="Count by tag using jsonb_array_elements" sql={`SELECT elem AS tag, count(*) AS docs
+FROM docs, jsonb_array_elements_text(body -> 'tags') AS elem
+GROUP BY elem
+ORDER BY docs DESC;
+`} assert={[{ rows: 4, columns: ['tag', 'docs'] }]} />
+
+`jsonb_array_elements_text` expands the array and returns text values directly, so they can be used in `GROUP BY`.
+
+## Indexing jsonb columns
+
+A GIN index makes containment and key-existence queries fast. There are two GIN operator classes:
+
+| Operator class | Accelerates | Does NOT accelerate |
+|---|---|---|
+| `gin (data)` — default, `jsonb_ops` | `?`, `?\|`, `?&` key existence | `@>` containment |
+| `gin (data jsonb_path_ops)` | `@>` containment | `?`, `?\|`, `?&` |
+
+The two GIN operator classes are complementary, not overlapping — measured right now, on 1,000 documents:
+
+<SqlBlock title="1,000 documents, default GIN, fresh statistics" sql={`CREATE TABLE events (id serial PRIMARY KEY, data jsonb NOT NULL);
+
+INSERT INTO events (data)
+SELECT jsonb_build_object('k', g % 10, 'name', 'row' || g)
+FROM generate_series(1, 1000) g;
+
+CREATE INDEX events_gin ON events USING gin (data);
+
+ANALYZE events;
+
+SELECT count(*) AS rows FROM events;`} assert={[{ rows: 1, firstCell: 1000 }]} />
+
+<SqlBlock title="Key existence: the default GIN covers it" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events WHERE data ? 'k';`} expect="Bitmap Heap Scan + Bitmap Index Scan on events_gin" assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+<SqlBlock title="Containment: same table, same index, Seq Scan" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events WHERE data @> '{"k":0}';`} expect="Seq Scan — the default jsonb_ops class does not index @>" assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+Read that plan again. The index exists, the query is exactly the containment check GIN is famous for — and the planner walks the table. The default operator class indexes keys, not containment.
+
+<SqlBlock title="Add jsonb_path_ops and the plan flips" sql={`CREATE INDEX events_path ON events USING gin (data jsonb_path_ops);
+
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events WHERE data @> '{"k":0}';`} expect="Bitmap Index Scan on events_path" assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+<Callout type="warn" title="GIN indexes are large">
+A GIN index is an inverted index over every key and value in every document — typically several times the size of the column. And since the two opclasses don't overlap, supporting `?` and `@>` on the same column means two GIN indexes. Profile before adding either to a high-write table.
+</Callout>
+
+<SqlBlock title="An expression index for one hot path" sql={`CREATE INDEX events_name ON events ((data ->> 'name'));
+
+SELECT count(*) FROM events WHERE data ->> 'name' = 'row42';`} expect="count = 1 — the index answers (data ->> 'name') = … equality directly" assert={[{ rows: 1, firstCell: 1 }]} />
+
+Indexing a single path (`data ->> 'name'`) is far cheaper than a full GIN and answers equality on that path from the index alone.
+
+## jsonb pretty-printing
+
+`jsonb_pretty` returns formatted text — useful for debugging or returning human-readable output.
+
+<SqlBlock title="Human-readable document" sql={`SELECT jsonb_pretty(
+  '{"a":[1,2,3],"b":{"c":true,"d":null}}'::jsonb
+) AS formatted;
+`} expect="The output spans multiple lines with 2-space indentation" assert={[{ rowsAtLeast: 1, columns: ['formatted'] }]} />
+
+<SqlBlock title="to_jsonb on a row for API responses" sql={`SELECT jsonb_pretty(to_jsonb(t))
+FROM (SELECT 42 AS id, 'Alice' AS name, true AS active) t;
+`} assert={[{ rowsAtLeast: 1, columns: ['jsonb_pretty'] }]} />
+
+`to_jsonb(row)` is the standard way to convert a database row into a JSON document for an API response.
+
+<JsonTree />
+
+## Type checking with IS JSON
+
+Validate that a column contains well-formed JSON with the `IS JSON` predicate.
+
+<SqlBlock title="IS JSON checks validity, not schema" sql={`SELECT val, val IS JSON AS ok
+FROM (VALUES
+  ('{"a":1}'::jsonb),
+  ('[1,2,3]'::jsonb),
+  ('"plain text"'::jsonb),
+  ('42'::jsonb)
+) t(val);
+`} assert={[{ rows: 4, columns: ['val', 'ok'] }]} />
+
+Every well-formed JSON value — object, array, string, number, boolean, null — passes `IS JSON`.
+
+<SqlBlock title="jsonb_typeof narrows by shape" sql={`SELECT val, jsonb_typeof(val) AS kind
+FROM (VALUES
+  ('{"a":1}'::jsonb),
+  ('[1,2,3]'::jsonb),
+  ('"hello"'::jsonb),
+  ('42'::jsonb),
+  ('null'::jsonb)
+) t(val);
+`} assert={[{ rows: 5, columns: ['val', 'kind'] }]} />
+
+`jsonb_typeof` returns one of `object`, `array`, `string`, `number`, `boolean`, `null`. Use it to validate structure before extracting fields — a document that is not an object cannot be queried with `@>` or expanded with `jsonb_each`.
+
+## A practical schema: hybrid relational + document
+
+Store what you query in columns; store what you return in jsonb.
+
+<SqlBlock title="The hybrid pattern" sql={`CREATE TABLE orders (
+  id         serial PRIMARY KEY,
+  customer   text NOT NULL,
+  status     text NOT NULL,
+  metadata   jsonb NOT NULL DEFAULT '{}'
+);
+
+INSERT INTO orders (customer, status, metadata) VALUES
+  ('Alice', 'shipped',  '{"tracking":"1Z999","carrier":"UPS","weight_kg":2.1}'),
+  ('Bob',   'pending',  '{"gift_wrap":true,"note":"Happy birthday!"}'),
+  ('Carol', 'delivered','{"tracking":"1Z888","carrier":"FedEx"}');
+
+SELECT customer, status, metadata -> 'tracking' AS tracking
+FROM orders
+WHERE metadata @> '{"gift_wrap":true}';
+`} assert={[{ affected: 3 }, { rows: 1, firstCell: 'Bob' }]} />
+
+Relational columns (`customer`, `status`) are indexed and queryable with standard SQL. The jsonb `metadata` column holds per-order payload — different orders have different fields — without schema changes.
+
+<SqlBlock title="Update a nested field in the document" sql={`UPDATE orders
+SET    metadata = jsonb_set(metadata, '{weight_kg}', '2.5')
+WHERE  id = 1
+RETURNING customer, metadata;
+`} assert={[{ rows: 1, columns: ['customer', 'metadata'] }]} />
+
+`jsonb_set` by path updates a single field without touching the rest of the document. No ORM required.
+
+## Checklist
+
+Before shipping a jsonb column to production:
+
+- [ ] `IS JSON` constraint guards inserts against malformed JSON
+- [ ] GIN index added if you query with `@>`, `?`, `?|`, or `?&`
+- [ ] Expression index added if you sort or filter on specific paths (`body ->> 'field'`)
+- [ ] `jsonb_strip_nulls` applied on output if stored nulls are placeholders
+- [ ] `ANALYZE` run after bulk loads — the planner needs statistics on jsonb columns too

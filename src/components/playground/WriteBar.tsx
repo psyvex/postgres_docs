@@ -86,7 +86,7 @@ export function WriteBar({ sql, schemaText, onWrite }: Props) {
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-x-3 top-full z-20 mt-1 max-h-56 overflow-auto rounded-xl border border-accent/30 bg-code-bg p-3 font-mono text-[12.5px] leading-relaxed text-code-text shadow-card"
+            className="absolute inset-x-3 top-full z-20 mt-1 max-h-56 overflow-auto rounded-xl border border-accent/30 bg-code-bg p-3 font-mono text-[calc(var(--ai-fs,15px)*0.85)] leading-relaxed text-code-text shadow-card"
           >
             <div className="mb-1 flex items-center gap-1.5 font-sans text-[11px] font-bold text-accent">
               {busy ? <><Loader2 className="h-3 w-3 animate-spin" /> Writing SQL…</> : 'Inserted into the editor (⌘Z to undo)'}

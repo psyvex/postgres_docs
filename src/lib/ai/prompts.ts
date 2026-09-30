@@ -42,6 +42,8 @@ Reply with:
 2. An improved version in one fenced sql block (or say it is already fine).
 
 \`\`\`sql\n${b.sql}\n\`\`\``,
+  explainPlan: (b: { sql?: string; plan?: string }) =>
+    `Walk through this PostgreSQL EXPLAIN (FORMAT JSON) plan top-down, as a senior DBA would in a code review. For each node: name the node type, the relation, the estimated startup/total cost and rows, and any Filter. Identify every Seq Scan and say whether an index would help (and which column). Point out nested-loop vs hash-join choices, redundant Sort nodes, and any plan-shape concerns. End with one concrete suggestion (index, rewrite, or statistic) that would improve the plan.\n\nSQL:\n\`\`\`sql\n${b.sql}\n\`\`\`\n\nPlan (JSON):\n\`\`\`json\n${b.plan}\n\`\`\``,
   simplify: (b: { text?: string; lesson?: string }) =>
     `A learner highlighted this passage${b.lesson ? ` in the lesson "${b.lesson}"` : ''} and wants it explained more simply. Use plain words and one everyday analogy, in 3 to 5 sentences. If a tiny SQL example helps, add one.\n\n> ${b.text}`,
   translateText: (b: { text?: string; language?: string }) => `${translateTextInstructions(b.language ?? 'Hindi')}\n\n${b.text}`,

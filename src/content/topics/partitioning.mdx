@@ -1,0 +1,271 @@
+Postgres stores all rows of a table together. A 100-million-row table is one 50 GB file — a quarterly report scanning the whole thing, or a `VACUUM` running over it, touches every byte. **Table partitioning** splits one large table into many smaller ones that Postgres routes automatically, so a quarterly report reads one partition and `VACUUM` can run over each piece independently.
+
+<Callout type="fun" title="The filing cabinet analogy">
+A table is a single tray. Partitioning is a filing cabinet with one drawer per month. Finding every January invoice means opening drawer 1, not riffling through 12 months of a single tray. The cabinet knows which drawer to open; you still `SELECT` from one table.
+</Callout>
+
+<SqlBlock title="Build 12 monthly partitions" sql={`CREATE TABLE events_p (
+  id         int GENERATED ALWAYS AS IDENTITY,
+  user_id    int NOT NULL,
+  kind       text NOT NULL,
+  created_at date NOT NULL,
+  payload    text
+) PARTITION BY RANGE (created_at);`} expect="One table. `PARTITION BY RANGE (created_at)` is the declaration; the partitions come next." />
+
+Now create each monthly partition and give it the date range it owns:
+
+<SqlBlock title="Twelve partitions, one month each" sql={`CREATE TABLE events_p_2024_01 PARTITION OF events_p
+  FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
+CREATE TABLE events_p_2024_02 PARTITION OF events_p
+  FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
+CREATE TABLE events_p_2024_03 PARTITION OF events_p
+  FOR VALUES FROM ('2024-03-01') TO ('2024-04-01');
+CREATE TABLE events_p_2024_04 PARTITION OF events_p
+  FOR VALUES FROM ('2024-04-01') TO ('2024-05-01');
+CREATE TABLE events_p_2024_05 PARTITION OF events_p
+  FOR VALUES FROM ('2024-05-01') TO ('2024-06-01');
+CREATE TABLE events_p_2024_06 PARTITION OF events_p
+  FOR VALUES FROM ('2024-06-01') TO ('2024-07-01');
+CREATE TABLE events_p_2024_07 PARTITION OF events_p
+  FOR VALUES FROM ('2024-07-01') TO ('2024-08-01');
+CREATE TABLE events_p_2024_08 PARTITION OF events_p
+  FOR VALUES FROM ('2024-08-01') TO ('2024-09-01');
+CREATE TABLE events_p_2024_09 PARTITION OF events_p
+  FOR VALUES FROM ('2024-09-01') TO ('2024-10-01');
+CREATE TABLE events_p_2024_10 PARTITION OF events_p
+  FOR VALUES FROM ('2024-10-01') TO ('2024-11-01');
+CREATE TABLE events_p_2024_11 PARTITION OF events_p
+  FOR VALUES FROM ('2024-11-01') TO ('2024-12-01');
+CREATE TABLE events_p_2024_12 PARTITION OF events_p
+  FOR VALUES FROM ('2024-12-01') TO ('2025-01-01');`} expect="Twelve NOTICE lines, one per partition. The parent table now has 12 children it will route to." />
+
+### Rows are routed, not scattered
+
+`INSERT INTO events_p` goes to the right partition automatically — you never name it:
+
+<SqlBlock title="Insert into the parent; Postgres finds the partition" sql={`INSERT INTO events_p (user_id, kind, created_at, payload)
+  SELECT
+    (i % 500) + 1,
+    (ARRAY['signup','view','click','purchase'])[1 + (i % 4)],
+    DATE '2024-01-01' + (i % 365),
+    repeat('x', 30)
+  FROM generate_series(1, 120000) i;`} expect="120,000 rows inserted. Postgres checked each row's created_at and routed it into the right monthly partition." assert={[{ affected: 120000 }]} />
+
+<SqlBlock title="Check where a row landed" sql={`INSERT INTO events_p (user_id, kind, created_at, payload)
+  VALUES (1, 'signup', DATE '2024-06-15', 'routed')
+  RETURNING tableoid::regclass AS landed_in;`} expect="events_p_2024_06 — the June partition, not the parent. tableoid is the oid of the physical table the row lives in." assert={[{ rows: 1, firstCell: 'events_p_2024_06' }]} />
+
+<SqlBlock title="The parent has 0 bytes of its own" sql={`SELECT pg_size_pretty(pg_table_size('events_p'))     AS parent_size,
+       pg_size_pretty(pg_table_size('events_p_2024_06')) AS june_size;`} expect="0 bytes for the parent, 848 kB for June. The parent is a routing header — rows live in the partitions." assert={[{ rows: 1, firstCell: '0 bytes' }]} />
+
+### Partition pruning: reading only what you need
+
+<PartitionPruner />
+
+When a query has a `WHERE` on the partition key, Postgres skips irrelevant partitions entirely. Run the animation above, then see it in the query plan:
+
+<SqlBlock title="Query for one month: one partition in the plan" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events_p
+WHERE created_at = DATE '2024-06-15';`} expect="Seq Scan on events_p_2024_06 — no Append node, no other partitions. The planner identified the one matching partition from the bounds and opened only that one." />
+
+<SqlBlock title="Query for a range: two partitions" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events_p
+WHERE created_at >= DATE '2024-11-01';`} expect="Append over events_p_2024_11 and events_p_2024_12 — November and December overlap the range." />
+
+<SqlBlock title="Query with no filter: all twelve" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events_p;`} expect="Append with twelve Seq Scans — one per partition. No pruning happened because there was nothing to prune on." />
+
+<SqlBlock title="The count confirms the plan" sql={`SELECT count(*) AS june_rows FROM events_p
+WHERE created_at = DATE '2024-06-15';`} expect="330 — the exact number June 15 holds. Pruning is not an approximation; it is exact." assert={[{ rows: 1, firstCell: 330 }]} />
+
+Turn pruning off to see what a full scan costs:
+
+<SqlBlock title="Without pruning: scanning every partition" sql={`SET enable_partition_pruning = off;
+
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events_p
+WHERE created_at = DATE '2024-06-15';
+
+RESET enable_partition_pruning;`} expect="Append with twelve Seq Scans, each with a Filter on the predicate. In production this is the difference between reading one 848 kB partition and reading all twelve of them." />
+
+<Callout type="warn" title="pg_stat_user_tables is empty in this lab">
+PGlite has no background workers, so `pg_stat_user_tables.n_live_tup` is 0 for every table here. The lesson uses `SELECT count(*)` to demonstrate pruning; in a production Postgres `n_live_tup` would show per-partition row counts directly.
+</Callout>
+
+### Indexes are inherited
+
+Creating an index on the parent propagates it to every partition — existing and future:
+
+<SqlBlock title="Create one index on the parent" sql={`CREATE INDEX ON events_p (user_id);`} expect="One command, but check the next block." />
+
+<SqlBlock title="Each partition has its own copy" sql={`SELECT relname
+FROM pg_class
+WHERE relname LIKE 'events_p_2024_06%'
+  AND relkind IN ('r', 'i')
+ORDER BY relname;`} expect="Two rows: events_p_2024_06 (the table) and events_p_2024_06_user_id_idx (the index). The parent's index spawned one index per partition." assert={[{ rows: 2 }]} />
+
+<SqlBlock title="Pruning plus per-partition index scan" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events_p
+WHERE user_id = 42
+  AND created_at = DATE '2024-06-15';`} expect="Bitmap Index Scan on events_p_2024_06_user_id_idx, then Bitmap Heap Scan on events_p_2024_06. One partition, one index." />
+
+### Constraints: the partition key rule
+
+A primary key or unique constraint on a partitioned table must include the partition key. This is not optional:
+
+<SqlBlock title="PK without the partition key fails" sql={`CREATE TABLE pk_bad (
+  id         int PRIMARY KEY,
+  created_at date NOT NULL
+) PARTITION BY RANGE (created_at);`} expect="ERROR: unique constraint on partitioned table must include all partitioning columns" assert={[{ error: 'unique constraint on partitioned table must include all partitioning columns' }]} />
+
+<SqlBlock title="PK including the partition key works" sql={`CREATE TABLE pk_ok (
+  id         int,
+  created_at date NOT NULL,
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);`} expect="CREATE TABLE — the composite primary key (id, created_at) includes created_at, which is the partition key." />
+
+The same rule applies to foreign keys: the referenced table must have the partitioning column, and the referencing table must include it.
+
+### Default partitions and out-of-range rows
+
+Any row whose date falls outside all twelve ranges goes nowhere — unless you add a catch-all:
+
+<SqlBlock title="A default partition catches the overflow" sql={`CREATE TABLE events_p_default
+  PARTITION OF events_p DEFAULT;`} expect="CREATE TABLE. Now any row whose date is not in January–December goes here instead of throwing an error." />
+
+<SqlBlock title="Out-of-range rows land in the default" sql={`INSERT INTO events_p (user_id, kind, created_at, payload)
+  VALUES (1, 'signup', DATE '2023-05-05', 'before the archive')
+  RETURNING tableoid::regclass AS landed_in;`} expect="events_p_default — May 2023 is not in any of the twelve monthly ranges, so it falls through to the default partition." assert={[{ rows: 1, firstCell: 'events_p_default' }]} />
+
+<Callout type="tip" title="Use a default partition as a safety valve">
+A default partition catches data that lands outside the planned ranges — a missed cron job, a timezone offset, a 2023 invoice entered in 2024. Without it, an out-of-range `INSERT` fails. With it, the row is stored, and you can investigate later. Give it its own maintenance schedule.
+</Callout>
+
+### The default partition and pruning
+
+When a default partition exists, the planner may need to include it even when the range seems to cover the query — because the default partition has no defined upper bound, so Postgres cannot prove it is empty for a given range:
+
+<SqlBlock title="Pruning with a default partition: three scans" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM events_p
+WHERE created_at >= DATE '2024-11-01';`} expect="Append over events_p_2024_11, events_p_2024_12, and events_p_default — all three scanned with a Filter. Postgres cannot prove the default partition is empty for the range, so it reads it defensively." />
+
+### Detaching and attaching partitions
+
+Partitions can be removed without downtime using `DETACH`:
+
+<SqlBlock title="Detach January 2024" sql={`ALTER TABLE events_p
+  DETACH PARTITION events_p_2024_01;`} expect="DETACH. January is now a standalone table, fully readable and writable on its own. The main events_p no longer routes to it." />
+
+<SqlBlock title="After the detach: one fewer partition" sql={`SELECT count(*) AS partitions
+FROM pg_inherits
+WHERE inhparent = 'events_p'::regclass;`} expect="12 — the default partition is still there; January is the only partition removed." assert={[{ rows: 1, firstCell: 12 }]} />
+
+<SqlBlock title="The detached table is fully readable" sql={`SELECT count(*) AS jan_rows
+FROM events_p_2024_01;`} expect="10,198 — the January rows are still there, just no longer part of events_p." assert={[{ rows: 1, firstCell: 10198 }]} />
+
+<SqlBlock title="The parent now returns fewer rows" sql={`SELECT count(*) AS all_rows FROM events_p;`} expect="109,804 — January's 10,198 rows are gone from events_p." assert={[{ rows: 1, firstCell: 109804 }]} />
+
+A common pattern: detach the oldest partition, archive it (dump to S3, convert to a compressed table), and attach a new one for the month ahead. The partition key ranges stay contiguous.
+
+### Hash partitioning
+
+Range partitioning splits a timeline. **Hash partitioning** splits a key space evenly — useful when there is no natural order, or when you want an even distribution regardless of key patterns:
+
+<SqlBlock title="Hash partition on member_id with 4 buckets" sql={`CREATE TABLE visits (
+  id        int,
+  member_id int NOT NULL,
+  day       date NOT NULL
+) PARTITION BY HASH (member_id);
+
+CREATE TABLE visits_0 PARTITION OF visits
+  FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE visits_1 PARTITION OF visits
+  FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE visits_2 PARTITION OF visits
+  FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE visits_3 PARTITION OF visits
+  FOR VALUES WITH (MODULUS 4, REMAINDER 3);`} expect="Four hash partitions, each identified by (MODULUS 4, REMAINDER n)." />
+
+<SqlBlock title="A hash query hits exactly one partition" sql={`INSERT INTO visits SELECT i, i, DATE '2024-01-01'
+FROM generate_series(1, 1000) i;
+
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM visits
+WHERE member_id = 42;`} expect="Seq Scan on visits_2 — one partition. Postgres applies the hash function to 42, computes 42 % 4 = 2, and opens exactly visits_2." />
+
+<SqlBlock title="Hash partitioning does not prune on range predicates" sql={`EXPLAIN (COSTS OFF)
+SELECT count(*) FROM visits
+WHERE member_id > 42;`} expect="Append with four Seq Scans — a range predicate (> 42) cannot be hashed, so every partition must be scanned." />
+
+<Callout type="note" title="Range vs hash: when to use which">
+Use **range partitioning** when the partition key has a natural order and your queries often filter on ranges (dates, numeric bands). Pruning eliminates the partitions you don't need. Use **hash partitioning** when the key has no natural order and you want an even distribution — useful for write-heavy tables where one range might be hotter than others. Hash partitioning does not prune on inequality predicates.
+</Callout>
+
+### List partitioning
+
+**List partitioning** names each partition's values explicitly — useful when the categories are few and fixed:
+
+<SqlBlock title="List partition on region" sql={`CREATE TABLE tickets (
+  id     int,
+  region text NOT NULL,
+  title  text
+) PARTITION BY LIST (region);
+
+CREATE TABLE tickets_eu PARTITION OF tickets
+  FOR VALUES IN ('eu', 'uk');
+CREATE TABLE tickets_us PARTITION OF tickets
+  FOR VALUES IN ('us', 'ca');
+CREATE TABLE tickets_ap PARTITION OF tickets
+  FOR VALUES IN ('ap', 'au');
+
+INSERT INTO tickets VALUES
+  (1, 'eu', 'Invoice question'),
+  (2, 'us', 'Refund request'),
+  (3, 'ap', 'Shipping delay');`} expect="Three partitions. Each row was routed to the partition whose list contained its region value." assert={[{ affected: 3 }]} />
+
+<SqlBlock title="Update can move a row between partitions" sql={`UPDATE tickets
+SET region = 'us'
+WHERE id = 1;
+
+SELECT tableoid::regclass AS now_in, id FROM tickets
+ORDER BY id;`} expect="Row 1 was in tickets_eu and is now in tickets_us. An UPDATE that changes the partition key value can move the row to a different partition — this is the only operation that changes a row's physical location." assert={[{ affected: 1 }]} />
+
+## Cheat sheet
+
+| Concept | Key fact |
+|---|---|
+| `PARTITION BY RANGE` | Splits on an ordered key; each partition has `FROM … TO …` |
+| `PARTITION BY HASH` | Splits on remainder modulo N; each partition has `WITH (MODULUS n, REMAINDER r)` |
+| `PARTITION BY LIST` | Splits on named values; each partition has `FOR VALUES IN (…)` |
+| Partition pruning | Planner skips partitions whose key ranges cannot match the WHERE clause |
+| Default + pruning | Planner may include the default partition when it cannot prove it is empty |
+| Index inheritance | An index on the parent creates one index per partition automatically |
+| Primary key / unique | Must include the partition key column |
+| Default partition | `PARTITION OF parent DEFAULT`; catches rows outside all defined ranges |
+| `DETACH PARTITION` | Makes a partition a standalone table without copying data |
+| Row routing | `INSERT`/`UPDATE` routes to the right partition automatically |
+
+<SqlBlock static title="Partition constraints from the planner's perspective" sql={`SELECT
+  c.relname::text        AS partition,
+  pg_get_partition_constraintdef(c.oid) AS boundary
+FROM pg_inherits i
+JOIN pg_class c ON c.oid = i.inhrelid
+WHERE i.inhparent = 'events_p'::regclass
+ORDER BY 1
+LIMIT 3;`} expect="The constraint expressions from three of the twelve partitions. `pg_get_partition_constraintdef` is available in all supported Postgres versions." />
+
+<SqlBlock static title="pg_partition_tree shows the partition hierarchy" sql={`SELECT
+  relid::text        AS name,
+  parentrelid::text  AS parent,
+  isleaf,
+  level
+FROM pg_partition_tree('events_p'::regclass);`} expect="One row per node; level 0 is the parent, level 1 are the partitions. The columns are relid, parentrelid, isleaf and level — there is no depth column." />
+
+## Check yourself
+
+1. You run `SELECT count(*) FROM events_p WHERE created_at BETWEEN '2024-03-01' AND '2024-05-31';`. How many partitions does the planner open, and why?
+2. What happens when you `INSERT INTO events_p (user_id, kind, created_at, payload) VALUES (1, 'x', DATE '2025-01-15', 'y');` with no default partition?
+3. Why does `CREATE TABLE t (id int PRIMARY KEY) PARTITION BY RANGE (id);` fail?
+4. You create an index on a partitioned table with 20 partitions. How many physical index structures exist?
+5. When does an `UPDATE` cause a row to move from one partition to another?
+6. You query `WHERE created_at >= '2024-11-01'` with a default partition present. Why does the plan include the default partition?

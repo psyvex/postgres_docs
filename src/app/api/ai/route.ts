@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AI_FAST_MODEL, AI_MODEL, acquireAiSlot, aiConfigured, getAiClient, isNativeClaude, transcriptionConfigured } from '@/lib/ai/server';
+import { QUOTA_LIMITS, chargeAi, humanize, limitLabel } from '@/lib/ai/quota';
 import { TASK_PROMPTS, TRANSLATOR_SYSTEM, TUTOR_SYSTEM, translateInstructions, type AiTask } from '@/lib/ai/prompts';
 import { languageLabel } from '@/lib/ai/languages';
 import { getTopic } from '@/content/registry';
@@ -20,12 +21,14 @@ type Body = {
   text?: string;
   /** Target language code for 'translate' / 'translateText'. */
   language?: string;
+  /** Raw JSON plan for 'explainPlan'. */
+  plan?: string;
 };
 
-const TASKS = new Set<AiTask>(['complete', 'explain', 'fix', 'ask', 'write', 'review', 'simplify', 'translateText', 'translate']);
+const TASKS = new Set<AiTask>(['complete', 'explain', 'fix', 'ask', 'write', 'review', 'simplify', 'translateText', 'translate', 'explainPlan']);
 
 export function GET() {
-  return Response.json({ enabled: aiConfigured(), model: AI_MODEL, transcription: transcriptionConfigured() });
+  return Response.json({ enabled: aiConfigured(), model: AI_MODEL, transcription: transcriptionConfigured(), quota: QUOTA_LIMITS });
 }
 
 /** Lesson MDX source, only for slugs in the registry (never an arbitrary path). */
@@ -40,6 +43,22 @@ export async function POST(request: Request) {
   if (!task || !TASKS.has(task)) return Response.json({ error: 'Unknown task.' }, { status: 400 });
   if ((body.sql?.length ?? 0) > 50_000 || (body.question?.length ?? 0) > 5_000 || (body.text?.length ?? 0) > 8_000) {
     return Response.json({ error: 'Input too large.' }, { status: 413 });
+  }
+
+  // Spend the visitor's budget before the model is reached. It sits after the task and size checks
+  // on purpose: a malformed request must cost nothing, so the only way to drain an allowance is to
+  // ask for real work.
+  const quota = chargeAi(request, task);
+  if (!quota.allowed) {
+    return Response.json(
+      {
+        error:
+          quota.limit === 'translate'
+            ? `You have used this hour's whole-lesson translations — the next one is free in ${humanize(quota.retryAfterSec)}. Raise AI_TRANSLATE_PER_HOUR in .env.local if this is your own deployment.`
+            : `You have used your AI allowance for the ${limitLabel(quota.limit)} — ${quota.retryAfterSec <= 90 ? 'the next request is free in ' : 'try again in '}${humanize(quota.retryAfterSec)}, or raise AI_REQUESTS_PER_HOUR in .env.local if this is your own deployment.`,
+      },
+      { status: 429, headers: { 'retry-after': String(quota.retryAfterSec), 'x-quota-limit': quota.limit } },
+    );
   }
 
   const topic = body.lesson ? getTopic(body.lesson) : undefined;
@@ -106,6 +125,9 @@ export async function POST(request: Request) {
         const final = await stream.finalMessage();
         if (final.stop_reason === 'refusal') controller.enqueue(encoder.encode('\n\n_The assistant declined this request._'));
         if (final.stop_reason === 'max_tokens') controller.enqueue(encoder.encode('\n\n_(Answer truncated: it hit the length limit.)_'));
+        // Token-usage trailer: parsed and stripped by streamAi, invisible in the rendered answer.
+        const u = final.usage;
+        if (u) controller.enqueue(encoder.encode(`\n\n<!--u:${JSON.stringify({ i: u.input_tokens, o: u.output_tokens })}-->`));
       } catch (error) {
         const message =
           error instanceof Anthropic.AuthenticationError ? 'AI authentication failed: check ANTHROPIC_API_KEY / ANTHROPIC_AUTH_SCHEME in .env.local.'
@@ -124,5 +146,7 @@ export async function POST(request: Request) {
     },
   });
 
-  return new Response(readable, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+  return new Response(readable, {
+    headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-quota-remaining': String(quota.remaining) },
+  });
 }

@@ -1,0 +1,301 @@
+Postgres never overwrites a row. Every `UPDATE` writes a new version; every `DELETE` marks the old one dead. The **transaction id** (xid) on each version is the timestamp of the universe — it decides what is visible right now. Understanding that stamp is understanding the whole model.
+
+## Every row carries its birth certificate
+
+The lab's `tasks` table is small; let's build one large enough to feel it. This lesson uses a 20,000-row `orders` table with an index on `status`:
+
+<SqlBlock title="20,000 orders + index" sql={`CREATE TABLE orders (
+  id      int PRIMARY KEY,
+  status  text NOT NULL,
+  total   numeric(10,2) NOT NULL,
+  note    text
+);
+
+INSERT INTO orders
+  SELECT i, 'todo', (i % 97) * 3.50, repeat('x', 40)
+  FROM generate_series(1, 20000) i;
+
+CREATE INDEX orders_status_idx ON orders (status);
+
+SELECT count(*) AS rows FROM orders;`} assert={[{ rows: 1, firstCell: 20000 }]} />
+
+### xmin and xmax are not metadata — they are the database
+
+Two hidden columns exist on every row:
+
+| Column | Meaning |
+|---|---|
+| `xmin` | Transaction id that **created** this version |
+| `xmax` | Transaction id that **replaced** this version (0 = still live) |
+
+<SqlBlock title="Live rows have xmin set and xmax = 0" sql={`SELECT id, status, xmin::text::bigint, xmax
+FROM orders
+ORDER BY id
+LIMIT 5;`} expect="Every row has a positive xmin and xmax = 0. That is a live row." assert={[{ rows: 5, columns: ['id', 'status', 'xmin', 'xmax'] }]} />
+
+<SqlBlock title="All 20,000 rows are live — no xmax stamps anywhere" sql={`SELECT
+  count(*) FILTER (WHERE xmax = 0)  AS live,
+  count(*) FILTER (WHERE xmax <> 0) AS dead
+FROM orders;`} expect="20,000 live, 0 dead. Nothing has been updated or deleted yet." assert={[{ rows: 1, firstCell: 20000 }]} />
+
+`xmin` is a transaction id, not a number — aggregate functions like `min()` do not work on it directly. Cast to `bigint` first:
+
+<SqlBlock title="min(xid) fails; cast it" sql={`SELECT
+  count(*)        AS n,
+  min(xmin::text::bigint) AS oldest_xmin,
+  max(xmin::text::bigint) AS newest_xmin
+FROM orders;`} expect="All xmins are close together — they were seeded by the same transaction sequence." assert={[{ rows: 1, firstCell: 20000 }]} />
+
+## A delete is a retirement, not an erasure
+
+When you `DELETE` a row, Postgres does not destroy it. It writes a new version with `xmax = <this xact's id>` — invisible to every current and future snapshot — and leaves the old version on disk. The row is gone from your queries; the dead tuple is still there.
+
+<SqlBlock title="Delete one specific row" sql={`DELETE FROM orders WHERE id = 12345;
+
+SELECT pg_stat_force_next_flush();`} expect="DELETE 1. The second statement asks Postgres to publish the statistics this session has collected, so the next block can read them." assert={[{ affected: 1 }]} />
+
+<SqlBlock title="The row is gone from SELECTs" sql={`SELECT count(*) FROM orders WHERE id = 12345;`} expect="0. You cannot SELECT a dead tuple — it is invisible by definition." assert={[{ rows: 1, firstCell: 0 }]} />
+
+<SqlBlock title="The dead-tuple counter knows about it" sql={`SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname = 'orders';`} expect="1 — the DELETE did not remove a row from disk, it retired it, and that retired version is what n_dead_tup counts." assert={[{ rows: 1, firstCell: 1 }]} />
+
+`pg_stat_force_next_flush()` is a PG 16+ function. It exists because statistics are a **photo, not a live feed**: the counters are published when a session flushes them, so the block that makes a change cannot read its own numbers. The flush goes at the end of the writing block; the reading block comes after it.
+
+## The snapshot is a value you can print
+
+"Which rows can I see?" is not a vague question — it has a printable answer. Your current snapshot is three numbers: the oldest transaction still in flight, the next id up, and the list of ids in flight at that moment.
+
+<SqlBlock title="Print your own snapshot" sql={`SELECT pg_current_snapshot() AS snapshot;`} expect="Three colon-separated numbers, e.g. 760:760: — xmin:xmax:xip. An empty xip list means nobody else is in flight." assert={[{ rows: 1, columns: ['snapshot'] }]} />
+
+<SqlBlock title="Decode it into its three parts" sql={`SELECT (SELECT count(*) FROM pg_snapshot_xip(s)) AS in_flight,
+       pg_snapshot_xmin(s) AS sees_from,
+       pg_snapshot_xmax(s) AS sees_up_to
+FROM (SELECT pg_current_snapshot() AS s) t;`} expect="Three numbers. In this single-connection lab in_flight is 0 — with a busy server it is the list of write transactions whose outcome is still unknown." assert={[{ rows: 1, firstCell: 0 }]} />
+
+The reason `xmin` is not a plain integer is that it is a 32-bit counter that **wraps around**. Postgres compares ids modulo 2³² and refuses to let the window of live ids exceed roughly 2 billion — that deadline is the "multixid / xid wraparound" warning in your monitoring. The `xid8` type added in **PG 13** is a true 64-bit xid, and it is why the casts in this lesson work.
+
+The snapshot is also the reason the isolation levels disagree, and the reason one idle session can inflate a table. Both follow from the same picture — a clock of transaction ids, and a watermark on it:
+
+<MvccExplainer />
+
+<SqlBlock title="A long-running transaction pins the whole system" sql={`BEGIN;
+SELECT backend_xmin IS NOT NULL AS holds_a_horizon, pid, state
+FROM pg_stat_activity
+WHERE pid = pg_backend_pid();
+COMMIT;`} expect="true — inside a transaction your backend publishes backend_xmin, the oldest row version that is still needed. Vacuum cannot clean past it." assert={[{ rows: 1, firstCell: true }]} />
+
+`backend_xmin` is the mechanism behind the most common production vacuum incident: one forgotten `BEGIN;` in a psql session, left open for a day, holds the vacuum horizon back, and the table inflates. `SELECT pid, xact_start, state FROM pg_stat_activity WHERE xact_start < now() - interval '1 hour'` is how you find it.
+
+## What the isolation levels actually promise
+
+The **isolation level** controls which row versions your queries see. Postgres implements four levels; this lab runs `READ COMMITTED` by default.
+
+<SqlBlock title="Your default isolation level" sql={`SHOW transaction_isolation;`} expect="read committed" assert={[{ rows: 1, firstCell: 'read committed' }]} />
+
+<SqlBlock title="A serializable + read-only transaction cannot write" sql={`BEGIN ISOLATION LEVEL SERIALIZABLE, READ ONLY;
+UPDATE orders SET note = 'nope' WHERE id = 1;`} expect="ERROR: cannot execute UPDATE in a read-only transaction" assert={[{ error: 'cannot execute UPDATE in a read-only transaction' }]} />
+
+### REPEATABLE READ sees its own writes
+
+`REPEATABLE READ` gives you a snapshot that does not change for the duration of the transaction — even your own uncommitted writes are visible:
+
+<SqlBlock title="RR: my own UPDATE is immediately visible inside the tx" sql={`BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FILTER (WHERE status = 'doing') AS doing_before FROM orders;
+UPDATE orders SET status = 'doing' WHERE id = 19999;
+SELECT count(*) FILTER (WHERE status = 'doing') AS doing_after FROM orders;
+ROLLBACK;`} expect="0 rows on the first SELECT, 1 on the second — inside your own transaction, REPEATABLE READ shows you your own uncommitted write. Every isolation level does." assert={[{ rows: 1, firstCell: 1 }]} />
+
+`READ COMMITTED` behaves differently at the *statement* boundary: it takes a fresh snapshot before **every** statement, so a row another session committed between two of your statements becomes visible to the next one. `REPEATABLE READ` keeps the snapshot from the first statement, so it cannot. That difference is about **other sessions** — with one connection there is nobody else, which is why the block above looks unremarkable.
+
+<Callout type="fun" title="What one connection cannot show">
+The isolation levels differ in how they handle rows that **other transactions** committed between your statements. With one connection that constraint disappears — the interesting cases (`READ COMMITTED` picking up a row committed mid-query, `REPEATABLE READ` rolling back a concurrent update) require two concurrent sessions. The cheat sheet has a script for that.
+</Callout>
+
+## Atomicity, savepoints, and why an error takes the whole batch
+
+A transaction is **atomic**: every statement in it succeeds, or all of them are undone. Postgres has no partial commits.
+
+<SqlBlock title="A savepoint lets you undo part of a transaction" sql={`BEGIN;
+INSERT INTO orders VALUES (900001, 'a', 1, 'a');
+SAVEPOINT sp;
+INSERT INTO orders VALUES (900002, 'b', 1, 'b');
+ROLLBACK TO sp;
+COMMIT;
+SELECT count(*) FROM orders WHERE id IN (900001, 900002);`} expect="1 — the first INSERT survives because ROLLBACK TO only undoes back to the savepoint." assert={[{ rows: 1, firstCell: 1 }]} />
+
+<SqlBlock title="An error mid-batch discards everything" sql={`INSERT INTO orders VALUES (900003, 'c', 1, 'c');
+SELECT * FROM orders_nonexistent;          -- ← this fails
+INSERT INTO orders VALUES (900004, 'd', 1, 'd');`} expect="ERROR: relation orders_nonexistent does not exist (the real error message quotes the name)" assert={[{ error: 'relation "orders_nonexistent" does not exist' }]} />
+
+<SqlBlock title="Did the pre-error INSERT survive?" sql={`SELECT count(*) FROM orders WHERE id IN (900003, 900004);`} expect="0 — atomicity means the whole batch is discarded when any statement fails." assert={[{ rows: 1, firstCell: 0 }]} />
+
+## Locks are rows you got to first
+
+`SELECT … FOR UPDATE` marks the qualifying rows with a lock. Any other transaction that tries to lock the same rows waits. In the same session the lock is immediately visible in `pg_locks`:
+
+<SqlBlock title="FOR UPDATE takes a RowShareLock" sql={`BEGIN;
+SELECT id FROM orders WHERE id = 1 FOR UPDATE;
+SELECT count(*) AS row_share_locks FROM pg_locks
+WHERE relation = 'orders'::regclass
+  AND mode = 'RowShareLock';`} expect="1 — one RowShareLock on orders, held by this transaction." assert={[{ rows: 1, firstCell: 1 }]} />
+
+<SqlBlock title="COMMIT releases it" sql={`COMMIT;
+
+SELECT count(*) AS row_share_locks FROM pg_locks
+WHERE relation = 'orders'::regclass
+  AND mode = 'RowShareLock';`} expect="0 — COMMIT released every lock the transaction held." assert={[{ rows: 1, firstCell: 0 }]} />
+
+The `mode` filter matters. `pg_locks` lists *every* lock on the table, and a plain `SELECT` takes an `AccessShareLock` of its own — filter to the mode you are studying, or you will read your own bookkeeping as contention.
+
+Advisory locks are the cheap cross-process version of the same idea: Postgres attaches no meaning to the number, it is purely a cooperative token.
+
+<SqlBlock title="Advisory locks are reference-counted per session" sql={`SELECT pg_try_advisory_lock(42)  AS first_try,
+       pg_try_advisory_lock(42)  AS second_try,
+       pg_advisory_unlock(42)    AS unlocked_one,
+       pg_advisory_unlock(42)    AS unlocked_two,
+       (SELECT count(*) FROM pg_locks WHERE locktype = 'advisory') AS remaining;`} expect="true, true, true, true, 0. The same session is granted the same lock twice and must unlock it twice — every pg_try_advisory_lock needs its matching unlock, or the token leaks for the life of the connection." assert={[{ rows: 1, firstCell: true }]} />
+
+<SqlBlock title="Take a lock in one block and look for it in the next" sql={`SELECT pg_advisory_lock(1000);
+
+SELECT objid AS lock_number FROM pg_locks WHERE locktype = 'advisory';`} expect="1000 — the lock is still held, because advisory locks are session-scoped and the lab keeps one session across blocks." assert={[{ rows: 1, firstCell: 1000 }]} />
+
+<SqlBlock title="Give it back" sql={`SELECT pg_advisory_unlock(1000) AS unlocked,
+       (SELECT count(*) FROM pg_locks WHERE locktype = 'advisory') AS locks_left;`} expect="true and 0. Session locks survive across blocks (and across queries in your app's connection); only COMMIT/ROLLBACK release row locks." assert={[{ rows: 1, firstCell: true }]} />
+
+## Bloat, HOT updates, and why the lab cannot vacuum
+
+Every `UPDATE` to a row on a full heap page must write a **new heap tuple** — the old version stays on disk as a dead tuple. An update to an **unindexed column** on a page with free space is a **HOT update** (Heap-Only Tuple): the new version lives on the same page, pointed to by the old slot, so the index is untouched.
+
+Non-HOT updates bloat the table and index. HOT updates bloat only the table, and only by the size of the new row — much cheaper.
+
+Both tables below are the same 20,000-row `orders` table. The first batch updates the **indexed** column (`status`), the second updates the **unindexed** column (`note`) on pages that were left room to spare. Watch the heap and index sizes, not the row counts.
+
+<SqlBlock title="5000 non-HOT updates (indexed column)" sql={`SELECT pg_size_pretty(pg_relation_size('orders'))          AS heap_before,
+       pg_size_pretty(pg_relation_size('orders_status_idx')) AS index_before;
+
+UPDATE orders SET status = 'doing' WHERE id <= 5000;
+
+SELECT pg_size_pretty(pg_relation_size('orders'))          AS heap_after,
+       pg_size_pretty(pg_relation_size('orders_status_idx')) AS index_after,
+       pg_stat_force_next_flush()                            AS stats_flushed;`} expect="The heap gains a page per ~90 updated rows, and the index grows too — every new version needs a new index entry." assert={[{ rows: 1, firstCell: '2176 kB' }]} />
+
+<SqlBlock title="Read the counters the previous block published" sql={`SELECT n_tup_upd, n_tup_hot_upd, n_dead_tup
+FROM pg_stat_user_tables
+WHERE relname = 'orders';`} expect="n_tup_upd = 5001, n_tup_hot_upd = 0, n_dead_tup = 5004. Not round numbers — the counters record work, not outcomes, so the rolled-back REPEATABLE READ update and the deleted row are in there too." assert={[{ rows: 1, firstCell: 5001 }]} />
+
+`n_tup_hot_upd = 0` is the whole lesson of this pair: every one of those 5,000 updates wrote a new heap tuple **and** a new index entry, because the column you changed is in the index. The heap gained 432 kB to store rows you can no longer see.
+
+<SqlBlock title="Fillfactor 70, then 5000 fresh rows" sql={`ALTER TABLE orders SET (fillfactor = 70);
+
+INSERT INTO orders
+SELECT i, 'todo', 1.00, repeat('y', 40) FROM generate_series(30001, 35000) i;
+
+SELECT pg_size_pretty(pg_relation_size('orders'))          AS heap_after_inserts,
+       pg_size_pretty(pg_relation_size('orders_status_idx')) AS index_after_inserts;`} expect="This is the baseline for the HOT test: 5,000 real INSERTs, each with its own index entry. fillfactor only affects pages written from now on — the old pages are still 100 % full." assert={[{ rows: 1, firstCell: '2776 kB' }]} />
+
+<SqlBlock title="5000 HOT updates (unindexed column, pages with room)" sql={`UPDATE orders SET note = 'hot!' WHERE id BETWEEN 30001 AND 35000;
+
+SELECT pg_size_pretty(pg_relation_size('orders'))          AS heap_after_hot,
+       pg_size_pretty(pg_relation_size('orders_status_idx')) AS index_after_hot,
+       pg_stat_force_next_flush()                            AS stats_flushed;`} expect="The heap grows a little; the index does not move at all. That is HOT: the new version went into the free space on the same page, hanging off the old one, so no index entry was needed." assert={[{ rows: 1, firstCell: '2880 kB' }]} />
+
+<SqlBlock title="Same counters, now with HOT updates in them" sql={`SELECT n_tup_upd,
+       n_tup_hot_upd,
+       round(100.0 * n_tup_hot_upd / GREATEST(n_tup_upd, 1), 1) AS hot_pct,
+       n_dead_tup
+FROM pg_stat_user_tables
+WHERE relname = 'orders';`} expect="n_tup_upd = 10001, n_tup_hot_upd = 3523. HOT is not a separate row in the counters — it is a subset of updates. Roughly 70 % of the second batch qualified; the rest landed on pages that had no room left." assert={[{ rows: 1, firstCell: 10001 }]} />
+
+<SqlBlock title="The bloat number you would quote in a review" sql={`SELECT count(*)                                            AS live_rows,
+       pg_relation_size('orders')                            AS heap_bytes,
+       round(pg_relation_size('orders') / count(*)::numeric) AS bytes_per_live_row
+FROM orders;`} expect="About 118 bytes per live row. This row type is (int, text, numeric, text) with a 40-char note — call it 70 bytes on disk. The gap is dead versions, and you pay I/O for them on every scan." assert={[{ rows: 1, firstCell: 25000 }]} />
+
+### VACUUM cannot run inside a transaction
+
+`VACUUM` reclaims dead tuples and marks the space reusable — but it runs *between* transactions, never inside one. The lab sends each block as one multi-statement string, which Postgres wraps in an implicit transaction, so `VACUUM` refuses:
+
+<SqlBlock title="Ask for a vacuum and read the error" sql={`VACUUM (ANALYZE, VERBOSE) orders;`} expect="ERROR: VACUUM cannot run inside a transaction block" assert={[{ error: 'VACUUM cannot run inside a transaction block' }]} />
+
+In `psql` a lone `VACUUM orders;` autocommits and works fine — it only fails when something wrapped it in a transaction, which is exactly what migration tools and this lab do. `VACUUM FULL` and `CREATE INDEX CONCURRENTLY` have the same rule. `REINDEX` and `ANALYZE` do not: they are transactional, as these two blocks show.
+
+<SqlBlock title="REINDEX is transactional (no error)" sql={`REINDEX INDEX orders_status_idx;
+SELECT 'reindexed' AS ok;`} expect="reindexed — the index was rebuilt without error." assert={[{ rows: 1, firstCell: 'reindexed' }]} />
+
+<SqlBlock title="ANALYZE refreshes statistics (no error)" sql={`ANALYZE orders;
+SELECT 'analyzed' AS ok;`} expect="analyzed" assert={[{ rows: 1, firstCell: 'analyzed' }]} />
+
+<Callout type="warn" title="autovacuum_count stays at 0 in this lab">
+PGlite runs in-process and has no background worker, so `autovacuum_count` in `pg_stat_user_tables` never advances. The bloat figures above are real; the vacuum that would reclaim them requires a real Postgres server.
+</Callout>
+
+## Rollback does not recycle the xid
+
+A `ROLLBACK` undoes the work but the transaction id it *would have used* is consumed. The tuple's original `xmin` stays:
+
+<SqlBlock title="Inside the transaction: the new version, with a new xmin" sql={`BEGIN;
+
+UPDATE orders SET total = 1.00 WHERE id = 500;
+
+SELECT total, xmin::text::bigint AS xmin_during FROM orders WHERE id = 500;`} expect="total = 1.00 and xmin_during is bigger than the table's original xmin — the new version is stamped with the id of the transaction that is still in progress, and you can see your own uncommitted work." assert={[{ rows: 1, firstCell: '1.00' }]} />
+
+<SqlBlock title="Now undo it" sql={`ROLLBACK;`} expect="ROLLBACK ends the transaction. Nothing is displayed — which is the point: run the next block to see what the table looks like." />
+
+<SqlBlock title="The row is back, stamped as it always was" sql={`SELECT total, xmin::text::bigint AS xmin_after FROM orders WHERE id = 500;`} expect="total = 52.50 again, and xmin_after is the ORIGINAL stamp — not the id the rolled-back transaction burned. The xid is spent; the tuple is untouched." assert={[{ rows: 1, firstCell: '52.50' }]} />
+
+<Callout type="warn" title="Why ROLLBACK has to be the last statement in a block here">
+This lab prefixes every block with `SET search_path = lab, public`, and the whole block runs as one transaction. A bare `ROLLBACK` in the middle of a block discards that `SET` too — `SET` inside a transaction is transaction-scoped — so any statement after it runs with `search_path = public` and answers **`relation "orders" does not exist`**. That is not a bug in the lesson: it is the same reason `SET` and `SET LOCAL` behave differently in a migration, and it is why the demo above is split into two blocks. Write `ROLLBACK;` last, or use `ROLLBACK TO savepoint`, which unwinds to a point without ending the transaction.
+</Callout>
+
+## Cheat sheet
+
+| Concept | Key fact |
+|---|---|
+| `xmin` | Transaction id that created this row version |
+| `xmax` | Transaction id that replaced this row; 0 = still live |
+| Dead tuple | A row version with a non-zero xmax, invisible to all snapshots |
+| `READ COMMITTED` | Re-snapshots before every statement — sees rows committed by other xacts |
+| `REPEATABLE READ` | Snapshot taken once at start — sees only rows committed before the tx began |
+| `SERIALIZABLE` | Like RR, plus detects write-write conflicts and rolls back one side |
+| HOT update | Update to an unindexed column on a page with free space; does not touch the index |
+| Non-HOT update | Update to an indexed column, or a full page — writes a new heap tuple, updates the index |
+| `VACUUM` | Reclaims dead tuples; **cannot run inside a transaction** |
+| `FOR UPDATE` | Takes a `RowShareLock`, released on `COMMIT` |
+| `SAVEPOINT` / `ROLLBACK TO` | Partial undo inside a transaction |
+| Atomicity | An error mid-batch discards the whole batch |
+
+### Observing MVCC across two sessions (production Postgres)
+
+This script requires two `psql` sessions. It demonstrates `READ COMMITTED` picking up a row committed mid-query — impossible to observe with one connection.
+
+<SqlBlock static title="Two psql windows, one row: the experiment one connection cannot run" sql={`-- Session A
+BEGIN;
+SELECT pg_backend_pid();                              -- note this PID
+UPDATE orders SET status = 'done' WHERE id = 100;     -- and stay open
+
+-- Session B — a second psql window
+BEGIN;
+SELECT status FROM orders WHERE id = 100;             -- 'todo': A's write is uncommitted
+SELECT pg_current_snapshot();                         -- its xip list names A's xid
+
+-- Session A
+COMMIT;                                               -- 757-ish is now history
+
+-- Session B — same open transaction, second statement
+SELECT status FROM orders WHERE id = 100;             -- 'done' under READ COMMITTED
+                                                      -- 'todo' under REPEATABLE READ
+COMMIT;`} />
+
+The last line is the whole lesson of the two levels. `READ COMMITTED` took a fresh snapshot before that second statement, so A's commit landed between your two reads. `REPEATABLE READ` is still standing on the snapshot from your first statement, where 757 was in flight, so it reads `todo` a second time — and it is allowed to, that is the guarantee you paid for. Run the same script with `BEGIN ISOLATION LEVEL REPEATABLE READ;` in session B to see it.
+
+<Callout type="version" title="pg_blocking_pids — who is waiting on whom (PG 9.6+)">
+`SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;` names the blockers directly; before PG 9.6 you had to derive it by joining `pg_locks` to itself on `granted = false`. The companion setting is `idle_in_transaction_session_timeout` (also PG 9.6+), which terminates a session that sits `idle in transaction` too long — set it per role with `ALTER ROLE api_service SET idle_in_transaction_session_timeout = '30s';` and the forgotten-`BEGIN` horizon problem stops being an incident.
+</Callout>
+
+## Check yourself
+
+1. A row has `xmin = 500` and `xmax = 0`. What does that mean? What about `xmin = 500`, `xmax = 501`?
+2. You `UPDATE` a row, then `ROLLBACK`. Why does `SELECT` still return the same value it did before the `UPDATE`?
+3. What is a HOT update, and why is it cheaper than a non-HOT update?
+4. Why does `VACUUM orders;` fail with "cannot run inside a transaction block" in this lab but works in `psql`?
+5. You run `BEGIN ISOLATION LEVEL REPEATABLE READ;` and query a table. Another session inserts 1,000 rows and commits. Can your transaction see them?
+6. Your `pg_stat_user_tables` shows `n_dead_tup = 10000`. A `SELECT count(*)` returns the correct count. Why are there dead tuples if the table looks right?

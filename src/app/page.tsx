@@ -10,6 +10,7 @@ import { AiDemo } from '@/components/home/sections/AiDemo';
 import { FinalCta } from '@/components/home/sections/FinalCta';
 import { Reveal, SectionHeading } from '@/components/home/sections/Reveal';
 import { HeroIntro, type HeroStat } from '@/components/home/HeroIntro';
+import { ProgressStats } from '@/components/home/sections/ProgressStats';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Icon } from '@/components/icons';
@@ -29,8 +30,20 @@ function heroStats(): HeroStat[] {
   ];
 }
 
+/** Total checkable blocks across all lessons — for the home-page progress summary. */
+function totalCheckable(): number {
+  const root = path.join(process.cwd(), 'src/content/topics');
+  let n = 0;
+  for (const f of readdirSync(root).filter((f) => f.endsWith('.mdx'))) {
+    const raw = readFileSync(path.join(root, f), 'utf8');
+    n += (raw.match(/<SqlBlock(?![^>]*\bstatic\b)[^>]*\bassert=/g) ?? []).length;
+  }
+  return n;
+}
+
 export default function Home() {
   const ready = topics.filter((t) => t.status === 'ready');
+  const break_ = topics.filter((t) => t.status === 'break');
   const planned = topics.filter((t) => t.status === 'planned');
 
   return (
@@ -43,6 +56,10 @@ export default function Home() {
       </section>
 
       <KeywordMarquee />
+
+      <section className="mx-auto max-w-xl px-4 py-6">
+        <ProgressStats totalLessons={ready.length} totalChecks={totalCheckable()} />
+      </section>
 
       <section className="py-16">
         <SectionHeading eyebrow="The lessons" title={<>Security &amp; automation, <span className="text-brand">one story.</span></>} copy="Each lesson builds on the same tiny multi-tenant app, so every concept lands on data you already know." />
@@ -65,6 +82,30 @@ export default function Home() {
           ))}
         </div>
       </section>
+
+      {break_.length > 0 && (
+        <section className="py-16">
+          <SectionHeading eyebrow="Break-it labs" title={<>Turn the lesson <span className="text-warn">against itself.</span></>} copy="You are Bob. Your job: break the RLS policy. Every challenge is a graded assertion — the answer card tells you what went wrong." />
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+            {break_.map((t, i) => (
+              <Reveal key={t.slug} index={i}>
+                <Link href={`/learn/${t.slug}`} className="group flex h-full flex-col rounded-3xl border border-warn/30 bg-surface p-5 shadow-card transition hover:-translate-y-1 hover:border-warn">
+                  <div className="flex items-center justify-between">
+                    <span className="grid h-12 w-12 place-items-center rounded-2xl" style={{ background: 'color-mix(in srgb, var(--warn) 15%, transparent)', color: 'var(--warn)' }}><Icon name={t.icon} size={28} /></span>
+                    <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase" style={{ background: 'color-mix(in srgb, var(--warn) 15%, transparent)', color: 'var(--warn)' }}>Break it</span>
+                  </div>
+                  <div className="mt-4 font-display text-xl font-bold">{t.title}</div>
+                  <p className="mt-1 flex-1 text-sm leading-relaxed text-muted">{t.tagline}</p>
+                  <div className="mt-4 flex items-center justify-between text-xs font-semibold">
+                    <span className="rounded-full bg-brand-soft px-2 py-0.5 text-brand">{t.track}</span>
+                    <span className="text-muted">{t.minutes} min</span>
+                  </div>
+                </Link>
+              </Reveal>
+            ))}
+          </div>
+        </section>
+      )}
 
       <HowItWorks />
       <TwoModes />

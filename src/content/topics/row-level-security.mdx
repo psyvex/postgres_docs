@@ -24,7 +24,7 @@ Acme Rockets (org 1) has Alice and Bob. Globex Labs (org 2) has Carol and Dan. N
 SET app.org_id    = '1';   -- which tenant
 SET ROLE app_member;       -- the database role your app connects as`} />
 
-<SqlBlock title="Step 1: no RLS yet, so Alice sees Globex's secret plan" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="All 7 rows, including org 2's 'Secret launch plan'." />
+<SqlBlock title="Step 1: no RLS yet, so Alice sees Globex's secret plan" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="All 7 rows, including org 2's 'Secret launch plan'." assert={[{rows: 7}]} />
 
 ## How RLS works
 
@@ -41,7 +41,7 @@ The model has four rules. Learn these and nothing about RLS will surprise you:
 
 <SqlBlock title="Enable RLS (run as owner)" sql={`ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;`} />
 
-<SqlBlock title="Alice again" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="0 rows. This is default deny: RLS is on but no policy allows anything yet." />
+<SqlBlock title="Alice again" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="0 rows. This is default deny: RLS is on but no policy allows anything yet." assert={[{rows: 0}]} />
 
 <Callout type="note">
 Notice there is **no error**. RLS filters silently. That is great for security but confusing while debugging, so always check `relrowsecurity` and `pg_policies` when rows "vanish" (the right-hand **Live schema** panel shows both).
@@ -54,7 +54,7 @@ Notice there is **no error**. RLS filters silently. That is great for security b
   TO app_member
   USING (org_id = current_org_id());`} />
 
-<SqlBlock title="Same query, different people" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="Alice → 4 Acme rows. Switch to Carol → 3 Globex rows. Then try Anonymous." />
+<SqlBlock title="Same query, different people" as="alice" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="Alice → 4 Acme rows. Switch to Carol → 3 Globex rows. Then try Anonymous." assert={[{rows: 4}]} />
 
 Try **Anonymous** in the menu. You get `permission denied for table tasks`, not zero rows. Why? **Privileges are checked before RLS.** `app_anon` was never granted `SELECT` on `tasks`, so the bouncer never even gets a look. RLS is *not* a replacement for `GRANT`; it's a second layer.
 
@@ -76,11 +76,11 @@ CREATE POLICY tenant_update ON tasks
   USING (org_id = current_org_id())
   WITH CHECK (org_id = current_org_id());`} />
 
-<SqlBlock title="Alice tries to plant a task in Globex" as="alice" sql={`INSERT INTO tasks (org_id, project_id, title) VALUES (2, 3, 'Sneaky task');`} expect="ERROR: new row violates row-level security policy for table tasks" />
+<SqlBlock title="Alice tries to plant a trick in Globex" as="alice" sql={`INSERT INTO tasks (org_id, project_id, title) VALUES (2, 3, 'Sneaky task');`} expect="ERROR: new row violates row-level security policy for table tasks" assert={[{error: 'row-level security policy'}]} />
 
-<SqlBlock title="Alice tries to steal Globex's task by editing it" as="alice" sql={`UPDATE tasks SET title = 'mine now' WHERE id = 7;`} expect="UPDATE 0: row 7 is invisible to Alice, so there is nothing to update." />
+<SqlBlock title="Alice tries to steal Globex's task by editing it" as="alice" sql={`UPDATE tasks SET title = 'mine now' WHERE id = 7;`} expect="UPDATE 0: row 7 is invisible to Alice, so there is nothing to update." assert={[{affected: 0}]} />
 
-<SqlBlock title="…or to move her own task to Globex" as="alice" sql={`UPDATE tasks SET org_id = 2 WHERE id = 1;`} expect="ERROR: WITH CHECK blocks moving a row out of your tenant." />
+<SqlBlock title="…or to move her own task to Globex" as="alice" sql={`UPDATE tasks SET org_id = 2 WHERE id = 1;`} expect="ERROR: WITH CHECK blocks moving a row out of your tenant." assert={[{error: 'row-level security policy'}]} />
 
 ## Permissive vs restrictive policies
 
@@ -101,7 +101,7 @@ CREATE POLICY keep_done_tasks ON tasks
   USING (status <> 'done');`} />
 
 <SqlBlock title="Bob tries to delete a done task, then a todo task" as="bob" sql={`DELETE FROM tasks WHERE id = 3 RETURNING id;  -- done → blocked by restrictive
-DELETE FROM tasks WHERE id = 4 RETURNING id;  -- todo → allowed`} expect="First DELETE returns 0 rows, second returns id 4." />
+DELETE FROM tasks WHERE id = 4 RETURNING id;  -- todo → allowed`} expect="First DELETE returns 0 rows, second returns id 4." assert={[{rows: 1, firstCell: 4}]} />
 
 ### Policies can use subqueries and functions
 
@@ -121,7 +121,7 @@ CREATE POLICY tenant_read ON tasks
     )
   );`} />
 
-<SqlBlock title="Compare Alice (owner) and Bob (member)" as="bob" sql={`SELECT id, title, assignee_id FROM tasks ORDER BY id;`} expect="Bob sees only his tasks plus unassigned ones. Switch to Alice to see all of Acme." />
+<SqlBlock title="Compare Alice (owner) and Bob (member)" as="bob" sql={`SELECT id, title, assignee_id FROM tasks ORDER BY id;`} expect="Bob sees only his tasks plus unassigned ones. Switch to Alice to see all of Acme." assert={[{rows: 2}]} />
 
 <Callout type="warn" title="Policies on the table you query inside a policy">
 The `EXISTS (SELECT … FROM members)` above works because `members` has no RLS. If it did, its policies would apply *inside* this policy too, and a policy that queries its own table can recurse forever (`infinite recursion detected in policy`). The fix is to wrap that lookup in a `SECURITY DEFINER` function with a pinned `search_path`. See [Functions & Procedures](/learn/functions-and-procedures).
@@ -136,7 +136,7 @@ The `EXISTS (SELECT … FROM members)` above works because `members` has no RLS.
 | Table owner | <Yes>by default</Yes> | `ALTER TABLE … FORCE ROW LEVEL SECURITY` |
 | Everyone else | <No /> | — |
 
-<SqlBlock title="Run as yourself (superuser)" sql={`SELECT count(*) AS visible_to_superuser FROM tasks;`} expect="Every row: superusers are never filtered." />
+<SqlBlock title="Run as yourself (superuser)" sql={`SELECT count(*) AS visible_to_superuser FROM tasks;`} expect="Every row: superusers are never filtered." assert={[{rows: 1, firstCell: 6}]} />
 
 This is why **the app must not connect as the table owner or a superuser.** A common setup: a `migrator` role owns the tables, and the app logs in as a separate role (like `app_member`) with only `GRANT`ed privileges. See [Roles & Privileges](/learn/roles-and-privileges).
 

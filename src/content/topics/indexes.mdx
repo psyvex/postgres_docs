@@ -1,0 +1,223 @@
+An index is a sorted shortcut. With no index, every `SELECT` is a full table scan: Postgres reads every row and throws most of them away. Add one index and the same query jumps straight to the matching rows. The catch is on the other side of the ledger — every `INSERT`, `UPDATE` and `DELETE` now has to maintain that shortcut too.
+
+<Callout type="fun" title="The library analogy">
+A table with no index is a library where books are shelved in the order they arrived. To find every Dickens you read every spine. An index is the card catalog: flip to "D", take the Dickens cards, go straight to those shelves. The cost is check-in — every new Dickens means updating the catalog *and* shelving the book.
+</Callout>
+
+<ResetDemo />
+
+## A table with no index
+
+The lab's `tasks` table has seven rows, so nothing here ever needs an index. Let's build a table big enough to feel it — 100,000 analytics events, generated in a single statement:
+
+<SqlBlock title="100,000 rows, one statement" sql={`CREATE TABLE events (
+  id         bigserial PRIMARY KEY,
+  org_id     int  NOT NULL,
+  user_id    int  NOT NULL,
+  kind       text NOT NULL,
+  payload    jsonb NOT NULL,
+  created_at timestamptz NOT NULL
+);
+
+INSERT INTO events (org_id, user_id, kind, payload, created_at)
+SELECT 1 + (i % 4),
+       1 + (i % 50),
+       (ARRAY['click', 'view', 'purchase', 'signup'])[1 + (i % 4)],
+       jsonb_build_object('path', '/p/' || (i % 100)),
+       timestamptz '2026-01-01' + (i % 100000) * interval '1 minute'
+FROM generate_series(1, 100000) i;
+
+ANALYZE events;
+
+SELECT count(*) AS rows FROM events;`} assert={[{ rows: 1, firstCell: 100000 }]} />
+
+`ANALYZE` hands the planner fresh statistics. Skip it and the planner guesses, and a planner that guesses picks bad plans.
+
+<SqlBlock title="Ask the planner what it will do" sql={`EXPLAIN SELECT count(*) FROM events WHERE user_id = 7;`} expect="Seq Scan on events — it reads all 100,000 rows to count 2,000 of them." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+`Seq Scan on events` is the plan saying "I'll read the whole table". The query is correct; it's just doing 50× the work it needs to.
+
+<SqlBlock title="Add an index, change nothing else" sql={`CREATE INDEX events_user_id_idx ON events (user_id);
+
+SELECT count(*) FROM events WHERE user_id = 7;`} expect="Same 2,000 rows — the index changed the route, not the answer." assert={[{ rows: 1, firstCell: 2000 }]} />
+
+<SqlBlock title="Ask again" sql={`EXPLAIN SELECT count(*) FROM events WHERE user_id = 7;`} expect="Bitmap Heap Scan (or Index Scan) using events_user_id_idx. The Seq Scan is gone." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+Nothing in the SQL changed. The plan changed because the set of available routes did.
+
+## What an index physically is
+
+An index is a second, smaller, **sorted** copy of one column: a B-tree of 8 kB pages, where each entry is a key plus a *tuple pointer* — block number and offset of the row in the table. The tree answers "where does 7 start?" without reading the table at all. Then Postgres goes and fetches the rows.
+
+Run both routes below and watch the two heap strips. Every tile is one 8 kB page — all 1,031 of them, measured from this table.
+
+<ScanRace />
+
+The seq scan walks the heap left to right. The index route descends three pages — root, interior, leaf — collects 2,000 tuple pointers, then opens **every heap page in the table** to reach them. Read that again: the index did not avoid the heap here. This table stores `user_id` as `1 + (i % 50)`, so a match lands on every 50th row and every page has one. The index wins by *checking* 2,000 rows instead of 100,000 — not by reading less of the table.
+
+Switch to `kind = 'purchase'` and the win nearly disappears: a quarter of the table matches, so the index is 23 pages wide and the heap is still all 1,031 pages. Keep the demo open while you work through the blocks below — the `INCLUDE` example is exactly the case that makes the blue strip vanish, because a covering index answers from the index alone.
+
+## Reading a plan
+
+`EXPLAIN` prints the plan; `EXPLAIN ANALYZE` runs the query and prints the plan **plus what actually happened**. A plan tree is read from the inside out — the most-indented line runs first, and each node passes rows up to the one above it.
+
+<SqlBlock title="Real timings, real rows" sql={`EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM events WHERE user_id = 7;`} expect="Compare rows=… (estimated) with actual rows=… — a big gap means stale statistics." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+| Field | Means |
+|---|---|
+| `cost=23.79..1087.05` | startup cost .. total cost, in the planner's arbitrary units. Compare **within** one plan, never across databases |
+| `rows=2000` | the planner's *estimate*. Not a measurement |
+| `actual time=0.05..0.31 rows=2000` | the measurement, only present with `ANALYZE` |
+| `width=51` | estimated average bytes per row |
+| `Buffers: shared read=…` | with `BUFFERS`: how much came off disk vs the cache. The real cost of a query |
+
+<Callout type="warn" title="Estimates come from statistics, not from your data">
+`rows=` is computed from `pg_statistic`, refreshed by `ANALYZE`. After a bulk load, the estimates can be wildly off and the planner picks a plan built for a table it no longer has. Run `ANALYZE` after big loads — `autovacuum` does it eventually, "eventually" is the operative word.
+</Callout>
+
+## The index types, and when each one wins
+
+<SqlBlock title="What's indexed on events right now" sql={`SELECT indexname, indexdef FROM pg_indexes
+WHERE schemaname = 'lab' AND tablename = 'events'
+ORDER BY indexname;`} expect="events_pkey (the primary key) and events_user_id_idx." assert={[{ rowsAtLeast: 2, columns: ['indexname', 'indexdef'] }]} />
+
+### B-tree — the default, and the right answer most of the time
+
+Handles `=`, `<`, `>`, `<=`, `>=`, `BETWEEN`, and `LIKE 'prefix%'`. Ordered, so one index serves equality *and* range *and* sorted output.
+
+<SqlBlock title="Composite B-tree: order of columns matters" sql={`CREATE INDEX events_org_time_idx ON events (org_id, created_at);
+
+EXPLAIN SELECT count(*) FROM events
+WHERE org_id = 1 AND created_at > timestamptz '2026-02-01';`} expect="Uses events_org_time_idx — the leading column org_id is present." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+<SqlBlock title="Same index, leading column missing" sql={`EXPLAIN SELECT count(*) FROM events
+WHERE created_at > timestamptz '2026-02-01';`} expect="No usable seek on events_org_time_idx — you cannot skip the leading column. A parallel/scan plan appears instead." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+A composite index on `(a, b)` is an index on `(a)` plus a tiebreak. It answers `WHERE a = …`, and `WHERE a = … AND b …`. It does **not** answer `WHERE b …` alone. So order the columns by *equality first, range last*: `(org_id, created_at)` serves both queries above, `(created_at, org_id)` serves only one.
+
+<SqlBlock title="Covering index: INCLUDE lets the query skip the table" sql={`CREATE INDEX events_user_cover_idx ON events (user_id) INCLUDE (kind);
+
+EXPLAIN SELECT kind FROM events WHERE user_id = 7;`} expect="Bitmap Heap Scan using events_user_cover_idx — the index is used, but it is NOT an Index Only Scan. Read on for why." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+`INCLUDE (kind)` stores `kind` *inside* the index as payload, so the query can be answered from the index alone. That plan is an **Index Only Scan** — and you probably don't see it here. An index-only scan is only allowed on pages the visibility map marks all-visible, and pages that were bulk-loaded minutes ago are not. `VACUUM events` (or autovacuum, eventually) sets those bits, and the plan flips to `Index Only Scan`. A covering index on a write-heavy table therefore pays off *after* the first vacuum.
+
+### BRIN — 24 kB where a B-tree needs 2.2 MB
+
+A BRIN index stores the min/max of each *range of pages*, not of each row. It only works when the table is physically ordered by the indexed column — which is exactly what an append-only `created_at` gives you.
+
+<SqlBlock title="Same column, two index types" sql={`CREATE INDEX events_time_btree ON events (created_at);
+CREATE INDEX events_time_brin ON events USING brin (created_at);
+
+SELECT pg_size_pretty(pg_relation_size('events_time_btree')) AS btree_on_created_at,
+       pg_size_pretty(pg_relation_size('events_time_brin')) AS brin_on_created_at;`} expect="btree ≈ 2208 kB, brin ≈ 24 kB — same column, same data, ~90× the size." assert={[{ rows: 1, columns: ['btree_on_created_at', 'brin_on_created_at'] }]} />
+
+The trade: BRIN can only say "this block of pages contains values between X and Y", so it reads a whole block of rows it will mostly discard. On a naturally ordered column with a selective range, that's a rounding error — at 1 % of the size of a B-tree.
+
+### GIN — for values that contain many things
+
+Arrays, `jsonb`, and `tsvector` for full-text search. The index maps each *element* back to the rows that contain it.
+
+<SqlBlock title="GIN on JSONB, and the containment operator it unlocks" sql={`CREATE INDEX events_payload_gin ON events USING gin (payload);
+
+SELECT count(*) AS hits FROM events WHERE payload @> '{"path": "/p/42"}'::jsonb;`} expect="1,000 rows — found through the GIN index, not by reading 100,000 rows." assert={[{ rows: 1, firstCell: 1000 }]} />
+
+<SqlBlock static title="Trigram GIN: what makes LIKE '%substring%' indexable" sql={`CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX events_kind_trgm ON events USING gin (kind gin_trgm_ops);
+
+-- 25,000 purchases, found without reading 100,000 rows
+SELECT count(*) FROM events WHERE kind ILIKE '%urch%';`} />
+
+A `LIKE '%urch%'` has a wildcard at the front, so a B-tree — which is sorted — has nowhere to start looking. `gin_trgm_ops` indexes every 3-character slice of the value, which turns "contains" into a lookup. Note the `CREATE EXTENSION`: **this lab's browser database does not ship `pg_trgm`**, so the block above is shown, not run. On a real server it's one `CREATE EXTENSION` away.
+
+<SqlBlock title="GIN is not a general-purpose index" sql={`CREATE INDEX events_kind_gin_bad ON events USING gin (kind);`} expect="ERROR: data type text has no default operator class for access method gin" assert={[{ error: 'no default operator class' }]} />
+
+That error is the point: GIN needs to know how to split a value into keys. `jsonb`, arrays and `tsvector` have built-in rules; plain `text` does not, which is why the previous block had to name `gin_trgm_ops` explicitly.
+
+### Hash — equality, nothing else
+
+<SqlBlock title="Hash answers =, and nothing else" sql={`CREATE INDEX events_kind_hash ON events USING hash (kind);
+
+EXPLAIN SELECT count(*) FROM events WHERE kind = 'click';`} expect="Hash Scan using events_kind_hash." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+<SqlBlock title="…and falls back the moment you ask for a range" sql={`EXPLAIN SELECT count(*) FROM events WHERE kind > 'click';`} expect="Seq Scan — a hash index stores no order, so it cannot answer >." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+### Expression indexes — index the *function call*
+
+<SqlBlock title="Index on lower(kind), queried as lower(kind)" sql={`CREATE INDEX events_kind_lower_idx ON events (lower(kind));
+
+EXPLAIN SELECT count(*) FROM events WHERE lower(kind) = 'purchase';`} expect="Index Scan using events_kind_lower_idx." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+<SqlBlock title="The same column, an expression the index does not match" sql={`EXPLAIN SELECT count(*) FROM events WHERE user_id * 2 = 14;`} expect="Seq Scan — events_user_id_idx indexes user_id, not user_id * 2." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+
+The match has to be exact. `WHERE lower(kind) = …` uses the expression index; `WHERE kind = …` does not, and an expression on an indexed column defeats the plain index. Rewrite `user_id * 2 = 14` as `user_id = 7` and the index is used again.
+
+### Partial indexes — index a slice, pay for a slice
+
+<SqlBlock title="Only the rows that matter" sql={`CREATE INDEX events_open_idx ON events (user_id) WHERE kind = 'purchase';
+
+SELECT indexdef FROM pg_indexes WHERE indexname = 'events_open_idx';`} expect="The definition carries the WHERE clause — the index only contains purchases." assert={[{ rows: 1 }]} />
+
+A partial index on `WHERE kind = 'purchase'` is a quarter of the size and only helps queries that also say `WHERE kind = 'purchase'`. The classic use is a `status` column where you always query the open rows.
+
+## Indexes are not free
+
+<SqlBlock title="Every index is paid for on every write" sql={`INSERT INTO events (org_id, user_id, kind, payload, created_at)
+SELECT 1, 1, 'click', '{}'::jsonb, now() FROM generate_series(1, 5000) i;
+
+SELECT count(*) AS indexes_now FROM pg_indexes
+WHERE schemaname = 'lab' AND tablename = 'events';`} expect="Each of those indexes had to be updated 5,000 times by this one INSERT." assert={[{ rowsAtLeast: 1, columns: ['indexes_now'] }]} />
+
+<Callout type="note" title="Unused indexes in a real database">
+`SELECT indexrelname, idx_scan FROM pg_stat_user_indexes WHERE relname = 'events'` lists every index and how many scans have used it. `idx_scan = 0` on a production table after a week is an index costing you write throughput for nothing. In this browser database the counters stay at `0` — PGlite does not maintain them — so read this one against a real server.
+</Callout>
+
+<SqlBlock title="The same column, indexed twice, is a pure loss" sql={`CREATE INDEX events_dup_idx ON events (user_id);
+
+SELECT indexname FROM pg_indexes
+WHERE schemaname = 'lab' AND tablename = 'events' AND indexdef LIKE '%(user_id)%'
+ORDER BY indexname;`} expect="Two indexes with the same definition. The planner will use one and both slow every write." assert={[{ rowsAtLeast: 2, columns: ['indexname'] }]} />
+
+<SqlBlock title="Drop the duplicate" sql={`DROP INDEX events_dup_idx;
+
+SELECT count(*) AS matching FROM pg_indexes
+WHERE schemaname = 'lab' AND tablename = 'events' AND indexdef LIKE '%(user_id)%';`} expect="3, not 1 — the LIKE filter also catches the covering index and the partial index, which are all built on user_id. Matching index definitions by text is fuzzy; read the defs before you drop anything." assert={[{ rows: 1, firstCell: 3 }]} />
+
+## Building an index without downtime
+
+`CREATE INDEX` on a busy table takes a `SHARE` lock: reads continue, **writes block** for the whole build. On a large table that's an outage. `CREATE INDEX CONCURRENTLY` builds in the background, taking only `SHARE UPDATE EXCLUSIVE` — writes continue the entire time.
+
+<SqlBlock title="Try it here and read the error" sql={`CREATE INDEX CONCURRENTLY events_org_idx ON events (org_id);`} expect="ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block" assert={[{ error: 'cannot run inside a transaction block' }]} />
+
+This lab runs each block as one transaction, so you get to read the rule's most common production error for free: **CONCURRENTLY cannot run inside a transaction block**. In `psql` it must be a single standalone statement — not wrapped in `BEGIN … COMMIT`, and not inside a migration file that opens a transaction (in Rails, `disable_ddl_transaction!`; in Flyway, no explicit transaction). It also leaves an `INVALID` index behind if it fails, which you must `DROP` before retrying — `SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid` finds them.
+
+<Callout type="version" title="PostgreSQL 14+ made CONCURRENTLY smarter">
+Since **PG 14**, `CREATE INDEX CONCURRENTLY` skips the second table scan when no prior failed build left an invalid index, so it costs roughly one scan instead of two. PG 14 also made `REINDEX CONCURRENTLY` available, so rebuilding a bloated index no longer blocks writes either.
+</Callout>
+
+## Cheat sheet
+
+| You have | Use |
+|---|---|
+| `=`, `<`, `>`, `BETWEEN`, `LIKE 'abc%'` on a scalar | B-tree (the default) |
+| `WHERE a = ? AND b > ?` | Composite `(a, b)` — equality columns first |
+| Append-only time column on a big table | BRIN — ~1 % of the size |
+| `jsonb @>`, arrays, full-text search | GIN |
+| `LIKE '%text%'` / `ILIKE` | GIN with `gin_trgm_ops` (needs `pg_trgm`) |
+| `WHERE lower(col) = …` | Expression index on `lower(col)` |
+| A table where you only ever query a subset | Partial index with that `WHERE` |
+| Covering reads, no table access | `(key) INCLUDE (payload)` → Index Only Scan |
+| A tiny table, or a column you filter to 30 % of rows | **No index** — a seq scan is faster |
+
+<Callout type="warn" title="The order that never fails">
+1. `EXPLAIN (ANALYZE, BUFFERS)` the slow query. **2.** Find the node with the biggest share of the time — usually a `Seq Scan` with a `Filter`. **3.** Ask whether a `WHERE` column is selective enough to be worth seeking on. **4.** Add the one index, `ANALYZE`, `EXPLAIN` again. **5.** Compare. If the plan didn't change, the index doesn't match the query — an expression, a leading column, or a cast is usually the culprit.
+</Callout>
+
+## Check yourself
+
+1. A query on `WHERE created_at > …` ignores your `(created_at, org_id)` index when `org_id` is in the `WHERE` list. Why?
+2. `WHERE lower(email) = 'x@y.com'` is slow. You have `CREATE UNIQUE INDEX ON users (email)`. Why doesn't it help, and what would?
+3. Your table has 12 indexes and inserts are slow. What single query tells you which of them to drop?
+4. Why is BRIN on `created_at` 24 kB while a B-tree on the same column is 2 MB — and why is a BRIN on `user_id` a bad idea on the same table?
+5. A `CREATE INDEX CONCURRENTLY` fails halfway through a deploy. What is left on the table, and what do you do next?

@@ -36,7 +36,8 @@ export function PersonaSelect({ value, onChange, prefix, align = 'right' }: Prop
         aria-expanded={open}
         className="flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-1 text-xs font-semibold hover:border-brand"
       >
-        {prefix && <span className="text-muted">{prefix}</span>}
+        {/* The prefix is the first thing dropped on a phone row (T5-6): the icon + name read fine. */}
+        {prefix && <span className="text-muted max-sm:hidden">{prefix}</span>}
         <Icon name={current.icon} className="text-brand" size={15} />
         <span className="max-w-[11rem] truncate">{current.label}</span>
         <ChevronDown className={clsx('h-3.5 w-3.5 text-muted transition', open && 'rotate-180')} />

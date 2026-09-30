@@ -256,6 +256,31 @@ html[data-splash='seen'] #splash {
   list-style: none;
   padding: 0;
 }
+
+/* AI answers (components/ai/AiAnswer) all scale from one base size: responsive until the reader
+   picks a size with A− / A+, which writes --ai-fs on <html> and remembers it. Children use em,
+   so code, tables and prose keep their proportions at every size; long identifiers wrap instead
+   of pushing the panel wider. */
+.ai-text {
+  font-size: var(--ai-fs, clamp(0.8rem, 0.72rem + 0.22vw, 1rem));
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.ai-text :not(pre) > code {
+  font-size: 0.88em;
+}
+.ai-text pre {
+  font-size: 0.84em;
+  overflow-x: auto;
+  white-space: pre;
+}
+.ai-text table {
+  font-size: 0.9em;
+}
+.ai-text th,
+.ai-text td {
+  padding: 0.4rem 0.5rem;
+}
 }
 
 /* Minimal SQL highlighting used by read-only code blocks. */

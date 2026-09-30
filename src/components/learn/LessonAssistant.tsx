@@ -2,16 +2,52 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { BookOpenText, Languages, MessageCircleQuestion, Send, Sparkles, X } from 'lucide-react';
+import clsx from 'clsx';
+import { BookOpenText, Crosshair, GripVertical, Languages, MessageCircleQuestion, Send, Sparkles, Trash2, X } from 'lucide-react';
 import { useAiEnabled, type AiPayload, type AiTask } from '@/lib/ai/client';
-import { LANGUAGES, languageLabel } from '@/lib/ai/languages';
+import { languageLabel } from '@/lib/ai/languages';
 import { AiAnswer } from '@/components/ai/AiAnswer';
+import { LanguagePicker } from '@/components/ai/LanguagePicker';
+import { useAiFontSize } from '@/components/ai/useAiFontSize';
+import { clearAiCache } from '@/components/ai/useAiAnswer';
 import { VoiceButton } from '@/components/ai/VoiceButton';
 
 type Request = { id: number; task: AiTask; title: string; payload: AiPayload };
 type Selection = { text: string; x: number; y: number } | null;
+type Pos = { x: number; y: number };
 
 const PREF_KEY = 'postgres-lab:lang';
+const POS_KEY = 'postgres-lab:copilot:pos';
+
+/* Draggable copilot geometry — same shape as the research repo's copilot launcher. */
+const EDGE = 8;
+const FAB = 52;
+const PANEL_W = 420;
+const PANEL_H = 620;
+const GAP = 12;
+const DRAG_THRESHOLD = 4;
+
+const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+const restPos = (): Pos => ({ x: window.innerWidth - FAB - 24, y: window.innerHeight - FAB - 24 });
+const clampPos = (p: Pos): Pos => ({
+  x: clamp(p.x, EDGE, Math.max(EDGE, window.innerWidth - FAB - EDGE)),
+  y: clamp(p.y, EDGE, Math.max(EDGE, window.innerHeight - FAB - EDGE)),
+});
+const flipFor = (p: Pos) => ({ left: p.x + FAB / 2 > window.innerWidth / 2, up: p.y + FAB / 2 > window.innerHeight / 2 });
+
+/** Panel anchored next to the launcher, flipping to whichever side has room. */
+function panelBox(pos: Pos, flip: { left: boolean; up: boolean }) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const width = Math.min(PANEL_W, vw - 2 * EDGE);
+  const height = Math.min(PANEL_H, vh - 2 * EDGE);
+  return {
+    width,
+    height,
+    left: clamp(flip.left ? pos.x - width - GAP : pos.x + FAB + GAP, EDGE, Math.max(EDGE, vw - width - EDGE)),
+    top: clamp(flip.up ? pos.y + FAB - height : pos.y, EDGE, Math.max(EDGE, vh - height - EDGE)),
+  };
+}
 
 /**
  * Lesson-aware AI helper: a floating "Ask this lesson" panel (typed or spoken questions, answered
@@ -19,12 +55,85 @@ const PREF_KEY = 'postgres-lab:lang';
  */
 export function LessonAssistant({ slug, title }: { slug: string; title: string }) {
   const aiEnabled = useAiEnabled();
+  useAiFontSize(); // publishes --ai-fs as soon as any AI UI is on the page
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState('');
   const [requests, setRequests] = useState<Request[]>([]);
   const [selection, setSelection] = useState<Selection>(null);
   const [lang, setLang] = useState('hi');
   const list = useRef<HTMLDivElement>(null);
+
+  /* ── movable copilot ──────────────────────────────────────────────────────
+     One position drives both the launcher and the panel, so dragging either one
+     moves the whole copilot. Null until mounted (CSS keeps it bottom-right). */
+  const [pos, setPos] = useState<Pos | null>(null);
+  const posRef = useRef<Pos | null>(null);
+  const drag = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const flip = useRef({ left: true, up: true });
+
+  const moveTo = (next: Pos) => {
+    const p = clampPos(next);
+    posRef.current = p;
+    setPos(p);
+  };
+
+  useEffect(() => {
+    let start = restPos();
+    try {
+      const saved = localStorage.getItem(POS_KEY);
+      const parsed = saved ? (JSON.parse(saved) as Pos) : null;
+      if (parsed && Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) start = clampPos(parsed);
+    } catch {}
+    moveTo(start);
+    // Re-clamp when the window shrinks, so the copilot can never be stranded off-screen.
+    const onResize = () => posRef.current && moveTo(posRef.current);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const grab = (e: React.PointerEvent, skipControls = false) => {
+    const current = posRef.current;
+    if (!current) return;
+    if (skipControls && (e.target as HTMLElement).closest('button,select,input,textarea,a')) return;
+    flip.current = flipFor(current);
+    drag.current = { sx: e.clientX, sy: e.clientY, ox: current.x, oy: current.y, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const dragTo = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.clientX - d.sx;
+    const dy = e.clientY - d.sy;
+    if (!d.moved && Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return;
+    d.moved = true;
+    moveTo({ x: d.ox + dx, y: d.oy + dy });
+  };
+
+  /** A press that never moved is a tap; a drag remembers where the copilot was left. */
+  const release = (e: React.PointerEvent, tap?: () => void) => {
+    const d = drag.current;
+    drag.current = null;
+    const el = e.currentTarget as HTMLElement;
+    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    if (!d) return;
+    if (!d.moved) {
+      tap?.();
+      return;
+    }
+    if (posRef.current) {
+      try {
+        localStorage.setItem(POS_KEY, JSON.stringify(posRef.current));
+      } catch {}
+    }
+  };
+
+  const resetPos = () => {
+    moveTo(restPos());
+    try {
+      localStorage.removeItem(POS_KEY);
+    } catch {}
+  };
 
   useEffect(() => {
     try {
@@ -93,17 +202,27 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
         )}
       </AnimatePresence>
 
-      {/* launcher */}
-      {!open && (
-        <motion.button
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
-          onClick={() => setOpen(true)}
-          className="fixed bottom-6 right-6 z-40 flex items-center gap-2 rounded-full bg-accent px-4 py-3 text-sm font-bold text-white shadow-[0_12px_30px_-8px_var(--accent)]"
-        >
-          <Sparkles className="h-4 w-4" /> Ask this lesson
-        </motion.button>
-      )}
+      {/* launcher: tap opens/closes, drag moves the copilot, double-click sends it home */}
+      <button
+        onPointerDown={(e) => grab(e)}
+        onPointerMove={dragTo}
+        onPointerUp={(e) => release(e, () => setOpen((v) => !v))}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+        title="Lesson assistant — drag me anywhere"
+        aria-label={open ? 'Close lesson assistant' : 'Ask this lesson'}
+        style={{ width: FAB, height: FAB, ...(pos ? { top: pos.y, left: pos.x, right: 'auto' as const, bottom: 'auto' as const } : {}) }}
+        className={clsx(
+          'fixed z-40 grid touch-none cursor-grab place-items-center rounded-full bg-accent text-white shadow-[0_12px_30px_-8px_var(--accent)] transition-transform active:cursor-grabbing active:scale-95',
+          !pos && 'bottom-6 right-6',
+        )}
+      >
+        {open ? <X className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
+      </button>
 
       {/* panel */}
       <AnimatePresence>
@@ -113,17 +232,54 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-            className="fixed bottom-6 right-6 z-40 flex h-[min(620px,calc(100vh-7rem))] w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card"
+            style={pos ? panelBox(pos, flip.current) : { right: 24, bottom: 88, width: PANEL_W, height: PANEL_H }}
+            className="fixed z-40 flex flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card"
           >
-            <header className="flex items-center gap-2 border-b border-line px-4 py-3">
-              <span className="grid h-8 w-8 place-items-center rounded-xl bg-accent-soft text-accent"><Sparkles className="h-4 w-4" /></span>
+            <header
+              onPointerDown={(e) => {
+                const t = e.target as HTMLElement;
+                if (t.closest('button,select,input,a')) return;
+                grab(e, true);
+              }}
+              onPointerMove={dragTo}
+              onPointerUp={(e) => release(e)}
+              title="Drag me to move the assistant"
+              className="flex cursor-grab touch-none select-none items-center gap-2 border-b border-line px-3 py-3 active:cursor-grabbing"
+            >
+              <GripVertical className="h-4 w-4 shrink-0 text-muted" />
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent"><Sparkles className="h-4 w-4" /></span>
               <div className="min-w-0">
                 <div className="text-sm font-bold">Lesson assistant</div>
                 <div className="truncate text-[11px] text-muted">Answers use “{title}” as context</div>
               </div>
-              <select value={lang} onChange={(e) => { setLang(e.target.value); try { localStorage.setItem(PREF_KEY, e.target.value); } catch {} }} aria-label="Translation language" className="ml-auto max-w-[7.5rem] rounded-lg border border-line bg-bg px-1.5 py-1 text-[11px]">
-                {LANGUAGES.map((l) => <option key={l.code} value={l.code}>{l.label}</option>)}
-              </select>
+              <span className="ml-auto">
+                <LanguagePicker
+                  align="right"
+                  size="sm"
+                  includeEnglish
+                  value={lang}
+                  onChange={(code) => {
+                    setLang(code);
+                    try {
+                      localStorage.setItem(PREF_KEY, code);
+                    } catch {}
+                  }}
+                />
+              </span>
+              {requests.length > 0 && (
+                <button
+                  onClick={() => {
+                    setRequests([]);
+                    clearAiCache();
+                  }}
+                  aria-label="Clear answers"
+                  title="Clear answers (forgets the cached ones too, so re-asking uses the AI)"
+                  className="rounded-lg p-1 text-muted hover:bg-surface-2"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
+              <button onClick={resetPos} aria-label="Move back to the corner" title="Move back to the corner" className="rounded-lg p-1 text-muted hover:bg-surface-2"><Crosshair className="h-4 w-4" /></button>
               <button onClick={() => setOpen(false)} aria-label="Close" className="rounded-lg p-1 text-muted hover:bg-surface-2"><X className="h-4 w-4" /></button>
             </header>
 

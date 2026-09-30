@@ -10,6 +10,7 @@ import {
   PiClockCounterClockwiseDuotone,
   PiCompassDuotone,
   PiConfettiDuotone,
+  PiCrownCrossDuotone,
   PiCrownDuotone,
   PiDatabaseDuotone,
   PiDetectiveDuotone,
@@ -52,7 +53,7 @@ import {
   PiWrenchDuotone,
   PiXCircleDuotone,
 } from 'react-icons/pi';
-import { BurstIcon, TenantHopIcon } from './custom';
+import { BurstIcon, SkullIcon, TenantHopIcon } from './custom';
 
 export { ElephantBouncer } from './custom';
 
@@ -77,7 +78,10 @@ export const ICONS = {
   partitioning: PiStackDuotone,
   backups: PiLifebuoyDuotone,
   // personas
-  superuser: PiSparkleDuotone,
+  // A crown, deliberately: the sparkle this used is the same glyph as `sparkle` below, so the
+  // superuser row in "Run as…" read as an AI feature. `owner` keeps the plain crown; this one has
+  // a finial, so root and owner are still two different shapes.
+  superuser: PiCrownCrossDuotone,
   owner: PiCrownDuotone,
   astronaut: PiRocketLaunchDuotone,
   member: PiWrenchDuotone,
@@ -103,6 +107,7 @@ export const ICONS = {
   rollback: PiArrowUDownLeftDuotone,
   trigger: PiLightningDuotone,
   // attacks
+  skull: SkullIcon as IconType,
   injection: PiSyringeDuotone,
   bomb: PiBombDuotone,
   tenantHop: TenantHopIcon as IconType,

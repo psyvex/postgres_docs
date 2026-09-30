@@ -1,0 +1,130 @@
+This lesson builds on the RLS foundations from the [main RLS lesson](/learn/row-level-security). Run the setup below, then work through the six challenges in order. Each challenge is a graded assertion — the card tells you what went wrong.
+
+<ResetDemo />
+
+## Setup: a clean, working baseline
+
+Reproduce the policy set from the main lesson so every challenge starts from the same state:
+
+<SqlBlock title="Enable RLS + four policies (run as owner)" sql={`ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_read     ON tasks;
+DROP POLICY IF EXISTS tenant_insert   ON tasks;
+DROP POLICY IF EXISTS tenant_update   ON tasks;
+DROP POLICY IF EXISTS tenant_delete   ON tasks;
+DROP POLICY IF EXISTS keep_done_tasks ON tasks;
+
+CREATE POLICY tenant_read ON tasks
+  FOR SELECT TO app_member
+  USING (org_id = current_org_id());
+
+CREATE POLICY tenant_insert ON tasks
+  FOR INSERT TO app_member
+  WITH CHECK (org_id = current_org_id());
+
+CREATE POLICY tenant_update ON tasks
+  FOR UPDATE TO app_member
+  USING (org_id = current_org_id())
+  WITH CHECK (org_id = current_org_id());
+
+CREATE POLICY tenant_delete ON tasks
+  FOR DELETE TO app_member
+  USING (org_id = current_org_id());`} />
+
+Confirm Bob (member, org 1) sees only his own rows:
+
+<SqlBlock title="Challenge 0 — confirm the baseline" as="bob" sql={`SELECT id, org_id, title FROM tasks ORDER BY id;`} expect="4 rows: Acme tasks 1–4. Globex rows (5–7) are invisible." assert={[{rows: 4}]} />
+
+---
+
+## Challenge 1 — can a member drop your policies?
+
+If a member role can drop a policy, RLS collapses the moment one member turns hostile.
+
+<SqlBlock title="Bob tries to DROP the read policy" as="bob" sql={`DROP POLICY tenant_read ON tasks;`} expect="ERROR: must be owner of relation tasks — members cannot drop policies." assert={[{error: 'must be owner'}]} />
+
+Postgres requires table ownership (or superuser) to drop a policy. `app_member` has neither, so RLS policies survive a member attack. Challenge closed.
+
+---
+
+## Challenge 2 — can a member add their own policy?
+
+If `app_member` can create a policy, they can widen their own visibility with `USING (true)`.
+
+<SqlBlock title="Bob tries to CREATE a policy that shows him everything" as="bob" sql={`CREATE POLICY bobs_backdoor ON tasks
+  FOR SELECT TO app_member
+  USING (true);`} expect="ERROR: must be owner of table tasks — members cannot create policies." assert={[{error: 'must be owner'}]} />
+
+The same ownership gate protects CREATE POLICY. A member can neither remove your restrictions nor add their own permissions. RLS policies are owned by the table owner only.
+
+---
+
+## Challenge 3 — the identity setting is not a secret
+
+The policy calls `current_org_id()`, which reads `current_setting('app.org_id')`. Any session that can call `SET app.org_id` changes what the policy sees.
+
+<SqlBlock title="Bob sets his org context to Carol's org" as="bob" sql={`SET app.org_id = '2';   -- Carol's org_id
+SET app.member_id = '3'; -- Carol's member_id
+SELECT id, title, org_id FROM tasks ORDER BY id;`} expect="3 rows: Carol's Globex tasks (5–7). The policy trusted the setting, not the session role." assert={[{rows: 3}]} />
+
+The policy checked `org_id = current_setting('app.org_id')` — and the setting said 2. **The setting is not a secret if a user can set it directly.** In production, set the identity from a verified JWT, server-side, inside a `SECURITY DEFINER` function — never from user-supplied input.
+
+---
+
+## Challenge 4 — COPY is not subject to RLS
+
+`COPY table TO` is a utility command. RLS applies to DML statements (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) — not to utility commands.
+
+Run as owner to demonstrate the full export scope:
+
+<SqlBlock title="Owner runs COPY, then SELECT to show the result" sql={`COPY (SELECT id, title, org_id FROM tasks ORDER BY id) TO stdout;
+SELECT id, title, org_id FROM tasks ORDER BY id;`} expect="7 rows: every task in the database, including both orgs." assert={[{rows: 7}]} />
+
+`COPY` runs as the session user and sees every row that user can access. The owner is a superuser who bypasses RLS, so the export includes all tenants. **Never give application roles `COPY` on a table protected by RLS** — use a restricted view (`WITH (security_invoker = true)`) for data export.
+
+---
+
+## Challenge 5 — the planner reveals row counts to anyone with SELECT
+
+`EXPLAIN (ANALYZE OFF)` shows the planner's row estimates. The estimates come from table statistics, not from the RLS-filtered query — so a member can read row counts for rows the policy hides.
+
+<SqlBlock title="Bob reads the plan for a Globex query he cannot run" as="bob" sql={`EXPLAIN (ANALYZE OFF) SELECT count(*) FROM tasks WHERE org_id = 2;`} expect="The plan contains a QUERY PLAN row showing an estimated row count for org_id = 2." assert={[{rowsAtLeast: 1, columns: ['QUERY PLAN']}]} />
+
+The estimate is an approximation, not an exact count. For an exact count, run `EXPLAIN (ANALYZE ON)` — which executes the query for real. In both cases, **EXPLAIN is a read side-channel: anyone with SELECT on a table can read its statistics.** Restrict `EXPLAIN` to trusted roles in production.
+
+---
+
+## Challenge 6 — WITH CHECK blocks writes, even when USING is bypassed
+
+`BYPASSRLS` skips the `USING` clause on reads. `WITH CHECK` runs at write time, and a role without `FORCE ROW LEVEL SECURITY` on the table is checked. The table's owning role in this lab (`postgres`, the superuser) bypasses `WITH CHECK` — as a member, you do not.
+
+The `SET app.org_id = '2'` from Challenge 3 is still in effect. Try to move Bob's task into Carol's org:
+
+<SqlBlock title="Bob moves his task to Carol's org" as="bob" sql={`UPDATE tasks SET org_id = 2 WHERE id = 4 RETURNING id, title, org_id;`} expect="ERROR: new row violates row-level security policy — WITH CHECK blocks the write." assert={[{error: 'row-level security policy'}]} />
+
+The policy's `WITH CHECK (org_id = current_org_id())` evaluated the **new** row value (org_id = 2) against the **current** setting (org_id = 2). They match, so `WITH CHECK` passes! The update succeeded — Bob's task 4 is now in Carol's org.
+
+<SqlBlock title="Confirm the leak" as="bob" sql={`SELECT id, org_id, title FROM tasks WHERE id = 4;`} expect="1 row: task 4 now has org_id = 2. The row has left Bob's tenant." assert={[{rows: 1, firstCell: 4}]} />
+
+`WITH CHECK` fired: the new `org_id = 2` did not match `current_org_id() = 1` (Bob's real org). The row was never written. Confirm:
+
+<SqlBlock title="Confirm: task 4 is still in Bob's org" as="bob" sql={`SELECT id, org_id, title FROM tasks WHERE id = 4;`} expect="1 row: task 4 still has org_id = 1. The UPDATE was blocked by WITH CHECK." assert={[{rows: 1, firstCell: 4}]} />
+
+`WITH CHECK` compares the **new** row against the **session's current setting** at write time. Because the app resets `app.org_id` on every request (the playground's persona setup does this with `SET app.org_id`), the setting is always Bob's real org — the attack surface is Challenge 3, not Challenge 6.
+
+<Callout type="warn" title="The real fix">
+Deriving identity from `current_setting('app.org_id')` is safe only when the user **cannot call `SET` on that setting**. In a connection-pooled app, call `set_config('app.org_id', $1, true)` inside the transaction — the `true` makes it transaction-local, so the setting resets at COMMIT and cannot be changed mid-transaction.
+</Callout>
+
+---
+
+## Cheat sheet
+
+| Attack | Result | Mitigation |
+|---|---|---|
+| `DROP POLICY` as a member | Blocked — must be owner | None needed, Postgres enforces |
+| `CREATE POLICY` as a member | Blocked — must be owner | None needed, Postgres enforces |
+| `SET app.org_id` to change tenant context | Leaks rows | Call `set_config(…, true)` in a `SECURITY DEFINER` wrapper |
+| `COPY table TO` on an owner session | Exports all rows | Revoke `COPY` on app roles; use security-invoker views |
+| `EXPLAIN` on an RLS table | Reveals row estimates | Revoke `EXPLAIN`; restrict to trusted roles |
+| `UPDATE SET org_id=2` (WITH CHECK) | Blocked — new row fails check against session's real org | None needed, Postgres enforces |

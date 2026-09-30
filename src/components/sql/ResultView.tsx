@@ -4,6 +4,9 @@ import { motion } from 'motion/react';
 import clsx from 'clsx';
 import { AlertTriangle, CheckCircle2, Sparkles } from 'lucide-react';
 import type { RunResult, StatementResult } from '@/lib/db/types';
+import { isPlanResult, PlanToggle } from './PlanTree';
+import type { PlanEntry } from './PlanTree';
+import { ExportMenu } from './ExportMenu';
 
 type Props = {
   result: RunResult;
@@ -40,9 +43,13 @@ export function ResultView({ result, skip = 0, onAskAi, compact }: Props) {
   const last = statements.at(-1);
   return (
     <div className="space-y-3">
-      {visible.map((s, i) => (
-        <ResultTable key={i} result={s} compact={compact} />
-      ))}
+      {visible.map((s, i) =>
+        isPlanResult(s.columns, s.rows) ? (
+          <PlanToggle key={i} plan={s.rows[0]['QUERY PLAN'] as PlanEntry[]} raw={<ResultTable result={s} compact={compact} />} />
+        ) : (
+          <ResultTable key={i} result={s} compact={compact} />
+        ),
+      )}
       {visible.length === 0 && (
         <div className="flex items-center gap-2 rounded-xl bg-good-soft px-3 py-2 text-sm text-good">
           <CheckCircle2 className="h-4 w-4" /> Done{last?.rowCount ? ` · ${last.rowCount} row${last.rowCount === 1 ? '' : 's'} affected` : ''}
@@ -79,7 +86,10 @@ export function ResultTable({ result, compact }: { result: StatementResult; comp
           ))}
         </tbody>
       </table>
-      <div className="border-t border-line bg-surface-2 px-3 py-1 text-[11px] text-muted">{result.rows.length} row{result.rows.length === 1 ? '' : 's'}</div>
+      <div className="flex items-center justify-between border-t border-line bg-surface-2 px-3 py-1 text-[11px] text-muted">
+        <span>{result.rows.length} row{result.rows.length === 1 ? '' : 's'}</span>
+        <ExportMenu columns={result.columns} rows={result.rows} />
+      </div>
     </div>
   );
 }

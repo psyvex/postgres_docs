@@ -1,11 +1,16 @@
+'use client';
+
 import Link from 'next/link';
 import clsx from 'clsx';
 import { topics, type Topic } from '@/content/registry';
 import { Icon } from '@/components/icons';
+import { useProgress } from '@/lib/learn/progress';
 
 const TRACK_ORDER: Topic['track'][] = ['Security', 'Programming', 'Foundations', 'Performance', 'Operations'];
 
 export function TopicSidebar({ active }: { active: string }) {
+  const progress = useProgress();
+
   return (
     <aside className="hidden border-r border-line lg:block">
       <nav className="sticky top-14 max-h-[calc(100vh-3.5rem)] space-y-6 overflow-y-auto px-4 py-8">
@@ -24,6 +29,9 @@ export function TopicSidebar({ active }: { active: string }) {
                         className={clsx('flex items-center gap-2 rounded-xl px-2 py-1.5 text-sm font-semibold transition', active === t.slug ? 'bg-brand text-on-brand shadow-card' : 'hover:bg-surface-2')}
                       >
                         <Icon name={t.icon} size={17} /> {t.title}
+                        {t.slug in progress.lessons && (
+                          <Icon name="ok" size={14} className="ml-auto text-good" />
+                        )}
                       </Link>
                     ) : (
                       <span className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted/70">

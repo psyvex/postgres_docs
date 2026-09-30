@@ -6,6 +6,7 @@ import type * as Monaco from 'monaco-editor';
 import type { Schema } from '@/lib/db/useSchema';
 import { streamAi } from '@/lib/ai/client';
 import { BrandLoader } from '@/components/brand/BrandMark';
+import { getHistory, getPinned } from '@/lib/playground/history';
 
 type Props = {
   value: string;
@@ -55,6 +56,33 @@ export function SqlEditor({ value, onChange, onRun, schema, schemaText, aiComple
     monacoRef.current = monaco;
     editorRef.current = editor;
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => runRef.current());
+
+    // Query history recall: ↑ in an empty editor cycles through recent queries.
+    // The binding fires as a keydown listener (not addCommand) so normal ↑ cursor
+    // movement in a non-empty editor is never intercepted.
+    let historyIdx = -1;
+    editor.onKeyDown((e) => {
+      if (e.keyCode !== monaco.KeyCode.ArrowUp && e.keyCode !== monaco.KeyCode.ArrowDown) {
+        historyIdx = -1; // typing resets the recall position
+        return;
+      }
+      const model = editor.getModel();
+      if (!model || model.getValueLength() > 0) return; // only when empty
+      const all = [...getPinned(), ...getHistory()];
+      if (all.length === 0) return;
+      if (e.keyCode === monaco.KeyCode.ArrowUp) {
+        historyIdx = Math.min(historyIdx + 1, all.length - 1);
+      } else {
+        historyIdx = Math.max(historyIdx - 1, 0);
+      }
+      const text = all[historyIdx];
+      const lines = text.split('\n').length;
+      model.setValue(text);
+      editor.setPosition({ lineNumber: lines, column: text.split('\n').at(-1)!.length + 1 });
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
     onReady?.(editor);
 
     // Schema-aware completions: tables, columns, functions and common statements.

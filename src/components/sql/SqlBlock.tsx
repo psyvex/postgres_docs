@@ -2,10 +2,13 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
-import { ExternalLink, Loader2, Pencil, Play, RotateCcw, Sparkles } from 'lucide-react';
+import { CheckCircle2, ExternalLink, Loader2, Pencil, Play, RotateCcw, Sparkles, Target } from 'lucide-react';
 import { runSql } from '@/lib/db/store';
 import type { RunResult } from '@/lib/db/types';
+import { describeChecks, gradeChecks, type Check, type Grade } from '@/lib/learn/check';
+import { checkKey, markCheck, useProgress } from '@/lib/learn/progress';
 import { highlightSql } from '@/lib/sql/highlight';
 import { personaContext, withContext } from '@/lib/sql/session';
 import { useAiEnabled } from '@/lib/ai/client';
@@ -24,27 +27,45 @@ type Props = {
   pickPersona?: boolean;
   /** Expected outcome hint shown before running, e.g. "Alice should see 4 rows". */
   expect?: string;
+  /**
+   * The same promise in machine-checkable form. When present the block grades the run and says
+   * "passed" or names what differed, instead of leaving the learner to read the table themselves.
+   */
+  assert?: Check[];
   /** Read-only snippet (not runnable), e.g. config files or app code. */
   static?: boolean;
   lang?: string;
 };
 
-export function SqlBlock({ sql: initial, title, as, pickPersona, expect, static: isStatic, lang = 'sql' }: Props) {
+export function SqlBlock({ sql: initial, title, as, pickPersona, expect, assert, static: isStatic, lang = 'sql' }: Props) {
   const original = initial.trim();
   const [sql, setSql] = useState(original);
   const [editing, setEditing] = useState(false);
   const [persona, setPersona] = useState(as ?? 'owner');
   const [running, setRunning] = useState(false);
   const [run, setRun] = useState<{ result: RunResult; skip: number } | null>(null);
+  const [grade, setGrade] = useState<Grade | null>(null);
   const [ai, setAi] = useState<null | 'explain' | 'fix'>(null);
   const aiEnabled = useAiEnabled();
   const showPersona = pickPersona ?? as !== undefined;
+  const pathname = usePathname();
+  const progress = useProgress();
+  // A block with a title on a lesson page is a stable identity, so a pass survives reload.
+  const solved = assert && title ? `${pathname}#${title}` in progress.checks : false;
 
   const execute = async () => {
     setRunning(true);
     setAi(null);
     const { sql: full, skip } = withContext(sql, personaContext(persona));
-    setRun({ result: await runSql(full), skip });
+    const result = await runSql(full);
+    setRun({ result, skip });
+    if (assert) {
+      const g = gradeChecks(result, assert, skip);
+      setGrade(g);
+      if (g.passed && title) markCheck(checkKey(pathname, title), true);
+    } else {
+      setGrade(null);
+    }
     setRunning(false);
   };
 
@@ -55,6 +76,11 @@ export function SqlBlock({ sql: initial, title, as, pickPersona, expect, static:
       <div className="flex flex-wrap items-center gap-2 rounded-t-2xl border-b border-line bg-surface-2 px-3 py-2">
         <span className="rounded-md bg-brand-soft px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-brand">{lang}</span>
         {title && <figcaption className="text-sm font-semibold">{title}</figcaption>}
+        {solved && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-good-soft px-1.5 py-0.5 text-[10px] font-bold uppercase text-good" title="You passed this check">
+            <CheckCircle2 className="h-3 w-3" /> Solved
+          </span>
+        )}
         {!isStatic && (
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
             {showPersona && (
@@ -92,7 +118,27 @@ export function SqlBlock({ sql: initial, title, as, pickPersona, expect, static:
 
       {(expect || run || ai) && (
         <div className={clsx('space-y-3 p-3', !run && 'pb-2')}>
+          {/* The hint that describes what the block promises, shown before the learner has run it. */}
           {expect && !run && <div className="flex items-center gap-1.5 text-xs text-muted"><Icon name="target" className="text-accent" /> {expect}</div>}
+
+          {/* A check verdict — shown above the table so the pass/fail is seen first. */}
+          {assert && run && grade && (
+            grade.passed ? (
+              <div className="flex items-center gap-1.5 rounded-xl border border-good/30 bg-good-soft px-3 py-2 text-sm font-semibold text-good">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                {describeChecks(assert)}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-bad/30 bg-bad-soft px-3 py-2 text-sm text-bad">
+                <div className="flex items-start gap-1.5 font-semibold">
+                  <Target className="mt-0.5 h-4 w-4 shrink-0" />
+                  {describeChecks(assert)}
+                </div>
+                {grade.failures.map((f) => <div key={f} className="mt-1 text-xs opacity-80">{f}</div>)}
+              </div>
+            )
+          )}
+
           {run && <ResultView result={run.result} skip={run.skip} compact onAskAi={aiEnabled ? () => setAi('fix') : undefined} />}
           {ai && (
             <AiAnswer

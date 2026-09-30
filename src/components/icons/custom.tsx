@@ -16,6 +16,19 @@ export function BurstIcon(props: IconProps) {
   );
 }
 
+/** A skull: used for break-it lesson badges. */
+export function SkullIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <ellipse cx="12" cy="9" rx="8" ry="7" fill="currentColor" fillOpacity={0.2} />
+      <path d="M12 4C8.7 4 6 6.7 6 10c0 2.2 1.2 4.2 3 5.3V17h6v-1.7c1.8-1.1 3-3.1 3-5.3 0-3.3-2.7-6-6-6z" />
+      <circle cx="9.5" cy="9.5" r="1.5" fill="currentColor" fillOpacity={0.9} />
+      <circle cx="14.5" cy="9.5" r="1.5" fill="currentColor" fillOpacity={0.9} />
+      <path d="M10 13h4M11 17v2M13 17v2" />
+    </svg>
+  );
+}
+
 /** Tenant hopping: a jump arc from one tenant box into another. */
 export function TenantHopIcon(props: IconProps) {
   return (

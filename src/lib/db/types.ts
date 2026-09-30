@@ -26,6 +26,12 @@ export interface DbAdapter {
   run(sql: string): Promise<RunResult>;
 }
 
+/**
+ * Header carrying this deployment's `DB_QUERY_TOKEN`. Lives here, not in `guard.ts`, because the
+ * browser-side adapter needs the name and `guard.ts` is server-only (`node:crypto`).
+ */
+export const TOKEN_HEADER = 'x-db-token';
+
 /** Every run starts here so examples can reference demo tables without the `lab.` prefix. */
 export const SESSION_PREFIX = 'SET search_path = lab, public;';
 export const SESSION_RESET = 'RESET ROLE; RESET ALL;';

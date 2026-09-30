@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState, type ComponentType } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { motion } from 'motion/react';
 import clsx from 'clsx';
-import { Check, ChevronDown, Languages, Loader2, RotateCcw, X } from 'lucide-react';
+import { Loader2, RotateCcw, X } from 'lucide-react';
 import { streamAi, stripFence, useAiEnabled } from '@/lib/ai/client';
 import { LANGUAGES, isRtl, type LanguageCode } from '@/lib/ai/languages';
+import { LanguagePicker } from '@/components/ai/LanguagePicker';
 import { useMDXComponents } from '@/mdx-components';
 
 const PREF_KEY = 'postgres-lab:lang';
@@ -16,6 +17,8 @@ type Props = {
   /** Content hash of the lesson source; cached translations are invalidated when the lesson changes. */
   version: string;
   sourceLength: number;
+  /** Lesson meta chips (track, minutes, version) — the language picker joins this row. */
+  meta?: React.ReactNode;
   /** The original, server-rendered lesson. */
   children: React.ReactNode;
 };
@@ -38,19 +41,10 @@ async function compileMdx(source: string) {
  * The lesson MDX is translated by the AI with JSX components and SQL kept verbatim, then compiled
  * here — so animations and runnable examples keep working in the translated lesson.
  */
-export function LessonTranslator({ slug, version, sourceLength, children }: Props) {
+export function LessonTranslator({ slug, version, sourceLength, meta, children }: Props) {
   const aiEnabled = useAiEnabled();
   const [state, setState] = useState<State>({ kind: 'original' });
-  const [open, setOpen] = useState(false);
   const abort = useRef<AbortController | null>(null);
-  const menu = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => !menu.current?.contains(e.target as Node) && setOpen(false);
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
 
   // Reset to English when navigating between lessons.
   useEffect(() => () => abort.current?.abort(), [slug]);
@@ -64,7 +58,6 @@ export function LessonTranslator({ slug, version, sourceLength, children }: Prop
   };
 
   const translate = async (lang: LanguageCode, force = false) => {
-    setOpen(false);
     abort.current?.abort();
     try {
       localStorage.setItem(PREF_KEY, lang);
@@ -101,37 +94,27 @@ export function LessonTranslator({ slug, version, sourceLength, children }: Prop
 
   return (
     <div>
-      {aiEnabled && (
-        <div className="mb-6 flex flex-wrap items-center gap-2">
-          <div className="relative" ref={menu}>
-            <button onClick={() => setOpen((v) => !v)} className="flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-semibold shadow-card hover:border-brand">
-              <Languages className="h-3.5 w-3.5 text-brand" />
-              {current ? `${current.native} · ${current.label}` : 'English'}
-              <ChevronDown className="h-3.5 w-3.5 text-muted" />
-            </button>
-            <AnimatePresence>
-              {open && (
-                <motion.ul
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  className="absolute left-0 z-30 mt-1 max-h-80 w-64 overflow-y-auto rounded-xl border border-line bg-surface p-1 shadow-card"
-                >
-                  <MenuItem active={!current} onClick={showOriginal} label="English" sub="Original" />
-                  {LANGUAGES.map((l) => (
-                    <MenuItem key={l.code} active={current?.code === l.code} onClick={() => translate(l.code)} label={l.native} sub={l.label} />
-                  ))}
-                </motion.ul>
-              )}
-            </AnimatePresence>
-          </div>
-          {state.kind === 'ready' && (
+      {(meta || aiEnabled) && (
+        <div className="mb-8 flex flex-wrap items-center gap-3 text-xs font-semibold text-muted">
+          {meta}
+          {aiEnabled && (
             <>
-              <span className="rounded-full bg-accent-soft px-2.5 py-1 text-[11px] font-semibold text-accent">Translated by AI · code & SQL unchanged</span>
-              <button onClick={() => translate(state.lang, true)} className="flex items-center gap-1 text-[11px] font-semibold text-muted hover:text-text">
-                <RotateCcw className="h-3 w-3" /> Re-translate
-              </button>
-              <button onClick={showOriginal} className="text-[11px] font-semibold text-brand hover:underline">Show original</button>
+              <span className="h-4 w-px bg-line" aria-hidden />
+              <LanguagePicker
+                value={state.kind === 'original' ? '' : state.lang}
+                onChange={(code) => translate(code as LanguageCode)}
+                onOriginal={showOriginal}
+                showPair
+              />
+              {state.kind === 'ready' && (
+                <>
+                  <span className="rounded-full bg-accent-soft px-2.5 py-1 text-[11px] font-semibold text-accent">Translated by AI · code & SQL unchanged</span>
+                  <button onClick={() => translate(state.lang, true)} className="flex items-center gap-1 text-[11px] font-semibold text-muted hover:text-text">
+                    <RotateCcw className="h-3 w-3" /> Re-translate
+                  </button>
+                  <button onClick={showOriginal} className="text-[11px] font-semibold text-brand hover:underline">Show original</button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -169,17 +152,5 @@ export function LessonTranslator({ slug, version, sourceLength, children }: Prop
         <article className="prose-lab">{children}</article>
       )}
     </div>
-  );
-}
-
-function MenuItem({ active, onClick, label, sub }: { active: boolean; onClick: () => void; label: string; sub: string }) {
-  return (
-    <li>
-      <button onClick={onClick} className={clsx('flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm', active ? 'bg-brand-soft text-brand' : 'hover:bg-surface-2')}>
-        <span className="font-semibold">{label}</span>
-        <span className="text-xs text-muted">{sub}</span>
-        {active && <Check className="ml-auto h-3.5 w-3.5" />}
-      </button>
-    </li>
   );
 }

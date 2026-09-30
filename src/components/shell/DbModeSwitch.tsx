@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import clsx from 'clsx';
@@ -9,13 +10,29 @@ import { resetLocalDatabase } from '@/lib/db/local-adapter';
 import { SEED_SQL } from '@/lib/db/seed';
 
 type Status = { tone: 'good' | 'bad' | 'muted'; text: string } | null;
+type Guard = { remoteAllowed: boolean; tokenRequired: boolean; tokenConfigured: boolean };
 
 export function DbModeSwitch() {
-  const { mode, connection, setMode, setConnection, bump } = useDbStore();
+  const { mode, connection, serverToken, setMode, setConnection, setServerToken, bump } = useDbStore();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [guard, setGuard] = useState<Guard | null>(null);
   const panel = useRef<HTMLDivElement>(null);
+
+  // The token field is only asked for when the server actually demands it, so a local
+  // deployment never sees a field it cannot fill.
+  useEffect(() => {
+    if (!open || guard) return;
+    let alive = true;
+    fetch('/api/db/query')
+      .then((r) => (r.ok ? (r.json() as Promise<Guard>) : null))
+      .then((json) => alive && json && setGuard(json))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [open, guard]);
 
   useEffect(() => {
     if (!open) return;
@@ -65,8 +82,20 @@ export function DbModeSwitch() {
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-semibold shadow-card hover:border-brand"
       >
-        <span className={clsx('h-2 w-2 rounded-full', mode === 'local' ? 'bg-good' : 'bg-accent')} />
-        {mode === 'local' ? 'Browser DB' : `Live · ${connection.database}`}
+        <span className={clsx('h-2 w-2 shrink-0 rounded-full', mode === 'local' ? 'bg-good' : 'bg-accent')} />
+        {/* Below `sm` the chip is the widest thing in the header row, so it says less: "Browser"
+            reads the same, and a long database name is clipped instead of pushing the page sideways. */}
+        {mode === 'local' ? (
+          <>
+            <span className="hidden sm:inline">Browser DB</span>
+            <span className="sm:hidden">Browser</span>
+          </>
+        ) : (
+          <>
+            <span className="hidden sm:inline">{`Live · ${connection.database}`}</span>
+            <span className="inline-block max-w-[9ch] truncate sm:hidden">{connection.database}</span>
+          </>
+        )}
       </button>
 
       <AnimatePresence>
@@ -101,6 +130,17 @@ export function DbModeSwitch() {
                   <Field label="User" value={connection.user} onChange={(user) => setConnection({ user })} />
                 </div>
                 <Field label="Password (kept in memory only)" type="password" value={connection.password} onChange={(password) => setConnection({ password })} />
+                {guard?.tokenRequired && (
+                  <>
+                    <Field label="Server token (kept in memory only)" type="password" value={serverToken} onChange={setServerToken} />
+                    {/* Remote mode without a token refuses every query; say so before the learner hits it. */}
+                    {!guard.tokenConfigured && (
+                      <p className="rounded-lg bg-bad-soft px-3 py-2 text-[11px] leading-snug text-bad">
+                        This server sets <code className="font-mono">ALLOW_REMOTE_DB=true</code> with no <code className="font-mono">DB_QUERY_TOKEN</code>, so remote queries are refused. Set a token in <code className="font-mono">.env.local</code> and paste it above.
+                      </p>
+                    )}
+                  </>
+                )}
                 <label className="flex items-center gap-2 text-xs text-muted">
                   <input type="checkbox" checked={connection.ssl} onChange={(e) => setConnection({ ssl: e.target.checked })} /> Require SSL
                 </label>
@@ -114,6 +154,12 @@ export function DbModeSwitch() {
                 </div>
               </div>
             )}
+
+            {/* The one global door to the storage page; the header has no room for it at 320 px. */}
+            <Link href="/settings" className="mt-3 flex items-center justify-between gap-2 border-t border-line pt-3 text-xs font-semibold text-muted transition hover:text-brand">
+              Storage &amp; privacy in this browser
+              <span aria-hidden>→</span>
+            </Link>
 
             {status && (
               <div className={clsx('mt-3 flex items-center gap-2 rounded-lg px-3 py-2 text-xs', status.tone === 'good' && 'bg-good-soft text-good', status.tone === 'bad' && 'bg-bad-soft text-bad', status.tone === 'muted' && 'bg-surface-2 text-muted')}>

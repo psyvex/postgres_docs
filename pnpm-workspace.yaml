@@ -1,0 +1,5 @@
+# pnpm 10 blocks postinstall scripts unless the package is listed here.
+# esbuild (vitest's transform) and unrs-resolver (eslint's import resolver) need theirs.
+onlyBuiltDependencies:
+  - esbuild
+  - unrs-resolver

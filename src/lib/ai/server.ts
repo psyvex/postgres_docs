@@ -9,6 +9,9 @@ import Anthropic from '@anthropic-ai/sdk';
  *   CLAUDE_MODEL           main model, e.g. 'coder' on the gateway (default claude-opus-5-5)
  *   CLAUDE_FAST_MODEL      optional model for latency-sensitive calls (autocomplete); defaults to CLAUDE_MODEL
  *   AI_MAX_CONCURRENCY     max concurrent model calls for the whole process (default 5)
+ *   AI_REQUESTS_PER_HOUR   requests one visitor may make per hour (default 60; see lib/ai/quota.ts)
+ *   AI_MINUTE_BURST        requests one visitor may make per minute (default 6)
+ *   AI_TRANSLATE_PER_HOUR  whole-lesson translations one visitor may make per hour (default 10)
  *   TRANSCRIPTION_API_KEY  optional Whisper-compatible speech-to-text key (research repo contract)
  *   TRANSCRIPTION_API_URL  endpoint (default OpenAI /v1/audio/transcriptions)
  *   TRANSCRIPTION_MODEL    model (default whisper-1)

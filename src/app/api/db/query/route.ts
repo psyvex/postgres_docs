@@ -1,24 +1,13 @@
 import { NextResponse } from 'next/server';
 import { Client } from 'pg';
-import { SESSION_PREFIX, toFailure, type LiveConnection, type StatementResult } from '@/lib/db/types';
+import { SESSION_PREFIX, TOKEN_HEADER, toFailure, type StatementResult } from '@/lib/db/types';
+import { currentEnv, guardStatus, validateRequest, type DbRequestBody } from '@/lib/db/guard';
 
 export const runtime = 'nodejs';
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'host.docker.internal']);
-const MAX_SQL_LENGTH = 100_000;
-
-type Body = { connection?: LiveConnection; sql?: string };
-
-function validate(body: Body): { connection: LiveConnection; sql: string } {
-  const { connection, sql } = body;
-  if (!connection?.host || !connection.database || !connection.user) throw new Error('Host, database and user are required.');
-  if (!sql?.trim()) throw new Error('SQL is required.');
-  if (sql.length > MAX_SQL_LENGTH) throw new Error('SQL exceeds the maximum size.');
-  // This route executes arbitrary SQL, so by default it only talks to databases on this machine.
-  if (process.env.ALLOW_REMOTE_DB !== 'true' && !LOCAL_HOSTS.has(connection.host.trim().toLowerCase())) {
-    throw new Error('Only local databases are allowed. Set ALLOW_REMOTE_DB=true in .env.local to connect elsewhere.');
-  }
-  return { connection, sql };
+/** The form asks what this deployment allows before it asks the user for a secret. */
+export function GET() {
+  return NextResponse.json(guardStatus(currentEnv()));
 }
 
 export async function POST(request: Request) {
@@ -26,7 +15,9 @@ export async function POST(request: Request) {
   const elapsed = () => Math.round(performance.now() - startedAt);
   let client: Client | undefined;
   try {
-    const { connection, sql } = validate((await request.json()) as Body);
+    const gate = validateRequest((await request.json()) as DbRequestBody, currentEnv(), request.headers.get(TOKEN_HEADER));
+    if (!gate.ok) return NextResponse.json(toFailure(new Error(gate.error), elapsed()), { status: gate.status });
+    const { connection, sql } = gate;
     client = new Client({
       host: connection.host,
       port: connection.port || 5432,
