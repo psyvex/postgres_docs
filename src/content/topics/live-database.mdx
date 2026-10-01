@@ -1,0 +1,186 @@
+The playground runs **PGlite** by default — a full Postgres 18 compiled to WebAssembly, zero-latency, works offline, and every session starts from the same clean state. It is also a browser sandbox: no other machine can reach it, and its data is gone when you close the tab.
+
+**Live mode** connects the playground to a real Postgres server. Every query runs on that machine, across a real network, in a session that can see whatever that server holds. This lesson explains what changes when the connection is live.
+
+<Callout type="note" title="Every block here runs on both databases">
+Press Run and the query goes wherever the header chip points: the browser database, or your server. The graded checks are measured on the browser database, and some numbers genuinely belong to whichever machine you are on — a server address, a process id, a free-slot count. Each of those blocks says what changes when you switch, so a check that passes in both places is checking the shape of the answer and not a number you happen to have.
+</Callout>
+
+<ResetDemo />
+
+## The gate in front of every query
+
+`/api/db/query` accepts connections to **localhost only** by default. Remote hosts are refused with HTTP 403, because opening that route to the internet is giving a SQL shell to whoever can reach your server.
+
+To allow remote hosts, the server operator sets two variables in `.env.local` (never committed to version control):
+
+```
+ALLOW_REMOTE_DB=true
+DB_QUERY_TOKEN=a-long-random-string
+```
+
+`DB_QUERY_TOKEN` is a server secret. The playground sends it as the `x-db-token` header — it never appears in the JSON body. When `ALLOW_REMOTE_DB=false` the header is ignored; when `true` and no token is set, every query is refused with a message explaining what to do.
+
+<SqlBlock static title="The refusal a remote host gets when the gate is closed (shown as prose — the playground itself shows this message)" sql={`HTTP 403 Forbidden
+ERROR: Only local databases are allowed.
+Set ALLOW_REMOTE_DB=true in .env.local to connect elsewhere, and DB_QUERY_TOKEN with it.
+`} />
+
+The server-side gate lives in `src/lib/db/guard.ts`. It checks the two environment variables, rejects non-local hosts unless `ALLOW_REMOTE_DB=true`, and demands a matching token unless the connection is localhost. The client adapter (`src/lib/db/live-adapter.ts`) sends the token as a header whenever it is configured. Each request opens a fresh `pg` connection, runs the SQL, and closes — no session state carries over between runs.
+
+## Verifying the connection
+
+The first thing to check is that the connection is actually live:
+
+<SqlBlock title="Confirm this is your server, not PGlite" sql={`SELECT current_database()                   AS database,
+       current_setting('server_version_num') AS pg_version,
+       inet_server_addr()                   AS server_addr,
+       inet_server_port()                    AS server_port;`} expect="On PGlite: `postgres`, `180003` (18.0.3), `null`/`null` for server address (no real OS process). On a live server: your database name, a version number, and the server's IP and port." assert={[{ rows: 1, columns: ['database','pg_version','server_addr','server_port'] }]} />
+
+Each request gets a fresh connection. On PGlite the same process handles every query, so `pg_backend_pid()` stays constant across runs in the same session. On a real Postgres, every `pg.connect()` call gets a new OS process — and a new `pid`:
+
+<SqlBlock title="Process ID of this connection — unchanged in PGlite, different on a real server" sql={`SELECT pg_backend_pid() AS pid;`} expect="On PGlite this is always PID 42 — it is the same OS process handling every query. On a real Postgres, `pg_backend_pid()` changes between requests because each call opens a new connection." assert={[{ rows: 1, columns: ['pid'] }]} />
+
+## The server's configuration
+
+<SqlBlock title="What this server is configured to accept" sql={`SELECT name, setting, pending_restart
+FROM pg_settings
+WHERE name IN (
+  'listen_addresses',
+  'port',
+  'max_connections',
+  'ssl',
+  'unix_socket_directories'
+)
+ORDER BY name;`} expect="`listen_addresses = localhost` means the OS only accepts connections from the local machine. `ssl = off` means connections are unencrypted on localhost (acceptable, because the traffic never leaves the box). `max_connections = 100` on most hosts — this is a hard ceiling. `pending_restart` is `false` for all five: the running values and the file agree." assert={[{ rows: 5 }]} />
+
+`listen_addresses` is a postmaster-start value, so editing it in `postgresql.conf` does nothing until it is re-read. Two knobs tell you which of the two changes you are looking at:
+
+<SqlBlock title="Re-read the config files, and see whether a restart is still owed" sql={`SELECT pg_reload_conf() AS reloaded,
+       (SELECT pending_restart
+        FROM pg_settings WHERE name = 'listen_addresses') AS restart_owed;`} expect="`reloaded = true` on a real server: the files were re-read. On PGlite it is **false**, because WebAssembly Postgres was configured by its host process and has no `postgresql.conf` to re-read — nothing was owed and nothing was reloaded. `restart_owed` is `false` here; it turns `true` only for a value that a reload cannot apply (Postgres notes that in `pg_set_config` output and in the server log). A reload applies everything whose `context` is `sighup`; a restart is the only way to change a `postmaster` value." assert={[{ rows: 1, columns: ['reloaded','restart_owed'] }]} />
+
+<Callout type="warn" title="Reload is not restart">
+Reloading never drops connections and never interrupts running queries. Restarting does. If the setting you changed has `context = postmaster` — `listen_addresses`, `port`, `shared_buffers`, `max_connections` — a reload writes the new value into the file and sets `pending_restart`, and the server keeps running on the old one until someone restarts it. That gap is why "I changed it and nothing happened" is a common answer for a connection that is still being refused.
+</Callout>
+
+Whether a given client is even *allowed* to connect is decided one file further along, in `pg_hba.conf` — and Postgres will show you what it actually read:
+
+<SqlBlock title="The rules this server is actually enforcing" sql={`SELECT line_number, type, database, user_name, address, auth_method
+FROM pg_hba_file_rules
+ORDER BY line_number;`} expect="The lab's embedded configuration answers 6 rules, every one of them `trust` — so the connection form accepts any password, including an empty one. On your server the number and content differ, and `address` shows which networks each `host` rule covers — the `local` rows have an empty address because they are Unix-socket connections, which have no IP to match. Two failure modes: a non-superuser is refused entirely (only superusers may read this view), and if the file itself is malformed the `errors` column names the line — the server keeps running on the last rules it read successfully, so a bad edit does not lock you out, it just does not take effect." assert={[{ rowsAtLeast: 1 }]} />
+
+<SqlBlock title="How many connection slots are still free" sql={`SELECT (s.setting::int - a.cnt) AS slots_free
+FROM   pg_settings AS s
+CROSS JOIN (
+  SELECT count(*) AS cnt FROM pg_stat_activity
+) AS a
+WHERE s.name = 'max_connections';`} expect="`slots_free = 99` on PGlite (1 connected, ceiling 100). On a real server with 1 application: `99`. When slots run out, new connections wait or fail immediately depending on the host configuration. `superuser_reserved_connections` (usually 3) are never counted here — superuser connections are accepted even at the ceiling." assert={[{ rows: 1, firstCell: 99 }]} />
+
+<SqlBlock title="Which client connections are encrypted (0 on localhost; check your host for remote servers)" sql={`SELECT count(*) AS encrypted_sessions
+FROM pg_stat_ssl
+JOIN pg_stat_activity USING (pid);`} expect="On localhost this is almost always 0 — TLS adds latency for traffic that never leaves the machine. For remote servers, enable **Require SSL** in the Database chip and re-test." assert={[{ rows: 1, firstCell: 0 }]} />
+
+## Loading the lab schema onto your server
+
+The lessons use a `lab` schema with five tables. To run the same queries on your own Postgres:
+
+1. Open **Database** in the header chip → switch to **Live**.
+2. Fill in your connection details and press **Load demo schema**.
+
+This runs the seed SQL (shown below) on your server. The playground sets `search_path = lab, public` at the start of every request, so once the schema is loaded, queries work identically to the lesson examples.
+
+The full seed lives in `src/lib/db/seed.ts` — the same SQL the browser database is built from, so the two are never out of step. Its opening lines are the ones worth reading before you press the button on a server you care about:
+
+<SqlBlock static title="The first thing Load demo schema does (from src/lib/db/seed.ts)" sql={`-- Cluster-wide roles, created only if missing and never dropped.
+DO $$ BEGIN ... CREATE ROLE app_member NOLOGIN; ... END $$;
+
+DROP SCHEMA IF EXISTS lab CASCADE;   -- <-- destructive: see below
+CREATE SCHEMA lab;
+SET search_path = lab;
+
+-- Then five CREATE TABLEs, four INSERTs (organizations, members, projects,
+-- tasks -- audit_log is created but left empty), two helper functions
+-- (current_member_id, current_org_id), and the GRANTs.`} />
+
+<Callout type="warn" title="Load demo schema drops the lab schema first">
+`DROP SCHEMA IF EXISTS lab CASCADE` is the second line of the seed, and **CASCADE** means it takes everything inside with it — tables, indexes, policies, triggers, and any rows you added yourself. On the browser database that is the point: every lesson starts from a clean 4 members, 2 organizations, 7 tasks. On a live server it deletes your work in `lab`.
+
+It is scoped to the `lab` schema, so nothing else in your database is touched — and the `app_*` roles are created only if missing and never dropped. But do not point live mode at a database where `lab` is somewhere you keep something you want back, and take a dump if you are unsure.
+</Callout>
+
+<SqlBlock title="Confirm the schema loaded — this is 5 on the lab schema" sql={`SELECT count(*) AS tables_in_lab
+FROM information_schema.tables
+WHERE table_schema = 'lab';`} expect="5 tables: organizations, members, projects, tasks, audit_log. The browser database always answers 5 — it is seeded at first launch. On a live server this is the interesting one: **0** means you are connected to a database that has never seen the lessons, and pressing **Load demo schema** turns it into 5." assert={[{ rows: 1, firstCell: 5 }]} />
+
+<SqlBlock title="Everything the seed creates: members, organizations, and tasks" sql={`SELECT t.id, t.title, o.name       AS org,
+              t.status,         m.name     AS assignee
+FROM   lab.tasks          t
+JOIN   lab.organizations  o ON o.id = t.org_id
+LEFT JOIN lab.members     m ON m.id = t.assignee_id
+ORDER BY t.id;`} expect="7 rows spanning two organizations. Switch to your live server and compare — on a real deployment this has your real data." assert={[{ rows: 7, columns: ['id','title','org','status','assignee'] }]} />
+
+## Application roles: connecting as a named user
+
+On a live server, your application connects as a Postgres **login role**, not `postgres`. The seed creates three schema-only roles (`app_member`, `app_admin`, `app_anon`) — they have `NOLOGIN`, so they cannot authenticate. A real application creates its own login role and gets access through `GRANT`:
+
+Create it the way a migration would, so the block survives being run twice:
+
+<SqlBlock title="Create (or reuse) a login role, then grant it the minimum" sql={`DO $$
+BEGIN
+  CREATE ROLE lab_app LOGIN PASSWORD 'change-me-then-delete-me';
+EXCEPTION WHEN duplicate_object THEN
+  RAISE NOTICE 'lab_app already exists — roles are cluster-wide, they survive a schema rebuild';
+END $$;
+
+GRANT USAGE ON SCHEMA lab TO lab_app;
+GRANT SELECT ON lab.tasks TO lab_app;`} expect="The first run creates the role; the second prints the NOTICE instead of failing. A bare `CREATE ROLE` here would stop the block with `role lab_app already exists` (SQLSTATE 42710, with the name in double quotes) — roles live in the cluster, not in the schema, so **Reset demo data does not remove this role**, while the GRANTs below must be re-applied after every reset. The password is hashed with `scram-sha-256` before it is stored; Postgres never keeps plaintext." />
+
+<SqlBlock title="What the grant actually allows" sql={`SELECT has_schema_privilege('lab_app', 'lab',            'USAGE') AS can_see_schema,
+       has_table_privilege('lab_app', 'lab.tasks',        'SELECT') AS can_read_tasks,
+       has_table_privilege('lab_app', 'lab.tasks',        'INSERT') AS can_write_tasks,
+       has_table_privilege('lab_app', 'lab.organizations', 'SELECT') AS can_read_orgs;`} expect="`can_see_schema = true` and `can_read_tasks = true` from the two grants. `can_write_tasks = false` — no INSERT was granted. `can_read_orgs = false` — organizations was never named. If this row reads all-false, the block above has not run since your last reset." assert={[{ rows: 1, firstCell: true, columns: ['can_see_schema','can_read_tasks','can_write_tasks','can_read_orgs'] }]} />
+
+<SqlBlock title="Run as the application role: it reads exactly what was granted" sql={`SET ROLE lab_app;
+SELECT count(*) AS rows_visible FROM lab.tasks;`} expect="7 rows, from the `GRANT SELECT ON lab.tasks` and nothing else. Two other answers are informative: `permission denied for schema lab` means the GRANTs were dropped with an earlier `lab` schema rebuild — re-run the block above. **0** means Row-Level Security is still switched on from the RLS lesson: `lab_app` has no `app.org_id` set, so the tenant policy matches nothing. The table owner keeps seeing all rows, which is why the block above still looked right." assert={[{ rows: 1, firstCell: 7 }]} />
+
+<SqlBlock title="…and the write the grant did not give is refused" sql={`SET ROLE lab_app;
+INSERT INTO lab.tasks (org_id, project_id, title) VALUES (1, 1, 'should fail');`} expect="ERROR: permission denied for table tasks (SQLSTATE 42501). The password was correct, the connection was accepted, and the role simply does not have INSERT — the refusal happens at the table, not in the application." assert={[{ error: 'permission denied for table tasks' }]} />
+
+<SqlBlock title="A table it was never told about is also refused" sql={`SET ROLE lab_app;
+SELECT count(*) FROM lab.organizations;`} expect="ERROR: permission denied for table organizations — the grant named `tasks` and nothing else. This is the shape of a correct application role: reach is a list of grants, not a property of the password." assert={[{ error: 'permission denied for table organizations' }]} />
+
+To drop the demo role cleanly, every grant must be revoked first. Try the drop on its own and read what comes back:
+
+<SqlBlock title="DROP ROLE while the grants are still outstanding" sql={`DROP ROLE lab_app;`} expect="ERROR: role lab_app cannot be dropped because some objects depend on it (the real message wraps the role name in double quotes, and names no objects). The dependants are the two ACL entries the grants left behind — one on the schema, one on `tasks`." assert={[{ error: 'cannot be dropped because some objects depend on it' }]} />
+
+<SqlBlock title="Revoke both, then drop" sql={`REVOKE ALL ON lab.tasks FROM lab_app;
+REVOKE USAGE ON SCHEMA lab FROM lab_app;
+DROP ROLE lab_app;
+
+SELECT count(*) AS still_there FROM pg_roles WHERE rolname = 'lab_app';`} expect="0. Both revokes are required: clearing only one ACL entry leaves the other dependency in place and the drop keeps failing with the same unhelpful sentence. `DROP OWNED BY lab_app` is the blunt version of this — it revokes everything granted *to* the role and drops everything owned *by* it, which on a real server is a much larger blast radius than the two lines above, so read it as an emergency lever and never point it at a role that owns real tables." assert={[{ rows: 1, firstCell: 0 }]} />
+
+## The session context
+
+Every request on a live server starts with a clean session: no `SET ROLE`, no custom `search_path`, no open transaction. The playground sets `search_path = lab, public` at the start of every request, so `lab.` is always resolved without a prefix.
+
+On a real server, connection pooling (PgBouncer, Supavisor, RDS Proxy) changes the picture: a single Postgres connection is shared by many application requests. If your app relies on session state — `SET ROLE`, `set_config`, temporary tables — a pooler that reuses sessions silently bleeds state between requests. The lab's playground has no pooler: every request is one new connection, clean.
+
+## Cheat sheet
+
+| Situation | What to do |
+|---|---|
+| HTTP 403 on every query | Set `ALLOW_REMOTE_DB=true` **and** `DB_QUERY_TOKEN` in `.env.local` on the server |
+| `relation does not exist` | Press **Load demo schema** in the Database chip, or prefix tables with `lab.` if the schema is elsewhere |
+| `permission denied` | The connection role needs `GRANT` statements — a password alone does not grant access |
+| Wrong server version | `SELECT current_setting('server_version_num')` gives the integer (`180003` = 18.0.3) |
+| Connection slots exhausted | Wait for idle connections to close, or the server operator raises `max_connections` |
+| Unencrypted remote connection | Enable **Require SSL** in the Database chip and test with `pg_stat_ssl` |
+
+## Check yourself
+
+1. `SELECT pg_backend_pid()` returns the same number on every playground run on PGlite, but changes on a real Postgres. Why?
+2. Your live server has `listen_addresses = localhost`. A teammate tries to connect from their laptop and gets "connection refused". You edit the file and run `pg_reload_conf()`, which returns `true` — and the laptop is still refused. Why is the reload not enough, and what does `pg_settings.pending_restart` say about it?
+3. `DROP ROLE lab_app` fails with `role "lab_app" cannot be dropped because some objects depend on it`. `lab_app` was given `GRANT USAGE ON SCHEMA lab` and `GRANT SELECT ON lab.tasks`. Which `REVOKE` statements are needed before it will drop, and why is one of them not sufficient?
+4. `pg_hba_file_rules` shows `auth_method = trust` for your address. Does the connection form still need a password? What are the security implications?
+5. You run `SET ROLE lab_app` then `SELECT count(*) FROM lab.organizations` and get `permission denied`. What grant is missing, and why does the same `SELECT` work on the `postgres` role?

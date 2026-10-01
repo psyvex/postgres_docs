@@ -9,6 +9,7 @@ export const hi: Dictionary = {
     learn: 'सीखें',
     playground: 'प्लेग्राउंड',
     play: 'लैब',
+    exam: 'परीक्षा',
     search: 'पाठ, स्निपेट और टेबल खोजें',
     searchAria: 'खोज खोलें',
   },

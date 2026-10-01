@@ -10,6 +10,7 @@ export const ar: Dictionary = {
     learn: 'تعلّم',
     playground: 'المعمل',
     play: 'معمل',
+    exam: 'اختبار',
     search: 'ابحث في الدروس والمقتطفات والجداول',
     searchAria: 'افتح البحث',
   },

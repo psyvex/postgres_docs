@@ -15,7 +15,7 @@
  * Keys are `#`-joined paths, not object nesting, so a check id containing dots (a lesson slug has
  * none, but a title has plenty) cannot be mistaken for a path.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
 const KEY = 'postgres-lab:progress';
 
@@ -55,6 +55,10 @@ export function checkKey(pathname: string, title: string): string {
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((fn) => fn());
 
+/**
+ * Read the store. Kept for callers that want a value outside React; the memoised, identity-stable
+ * version used by `useProgress` is `getProgressSnapshot`.
+ */
 export function readProgress(): Progress {
   if (typeof window === 'undefined') return emptyProgress();
   try {
@@ -62,6 +66,46 @@ export function readProgress(): Progress {
   } catch {
     return emptyProgress();
   }
+}
+
+/**
+ * The snapshot `useSyncExternalStore` needs: **referentially stable** while the stored value is
+ * unchanged, because the hook compares snapshots by identity and a fresh object per call would
+ * re-render forever. Memoised on the stored string, so a write self-invalidates — no cache to clear
+ * in `commit`, and a corrupt value costs one parse.
+ */
+let cachedRaw: string | null | undefined;
+let cachedValue: Progress = PROGRESS_EMPTY;
+
+export function getProgressSnapshot(): Progress {
+  let raw: string | null;
+  try {
+    raw = typeof window === 'undefined' ? null : window.localStorage.getItem(KEY);
+  } catch {
+    // Private mode / disabled storage: read as "no progress" and stay identity-stable there.
+    raw = null;
+  }
+  if (raw !== cachedRaw) {
+    cachedRaw = raw;
+    cachedValue = raw ? parseProgress(raw) : PROGRESS_EMPTY;
+  }
+  return cachedValue;
+}
+
+/**
+ * Subscription for `useSyncExternalStore`. Local writes notify (the `storage` event skips the
+ * writing tab); other tabs arrive through `storage`. Called on the client only.
+ */
+export function subscribeProgress(onChange: () => void) {
+  listeners.add(onChange);
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === KEY) onChange();
+  };
+  window.addEventListener('storage', onStorage);
+  return () => {
+    listeners.delete(onChange);
+    window.removeEventListener('storage', onStorage);
+  };
 }
 
 function commit(next: Progress) {
@@ -94,25 +138,19 @@ export function clearProgress() {
 /**
  * Subscribe to progress. Returns the current value and re-renders on any write in this tab
  * (`notify`) or in another (`storage`). Components read it, they do not cache it.
+ *
+ * `useSyncExternalStore`, not `useState` + an effect that reads localStorage after paint. The
+ * effect shape is the hydration bug this file used to have: the server has no storage, so it
+ * rendered "no checkmarks", the client's *first* render agreed (the effect had not run), and then
+ * the effect fired and added the checkmarks — React had already committed the tree, so the added
+ * node inside the sidebar's `<li>` was reported as a server/client mismatch rather than as the
+ * second render it actually is. `getServerSnapshot` answers the same empty object the server
+ * rendered, `getProgressSnapshot` keeps that answer identity-stable, and a real write publishes
+ * through `subscribeProgress` — so the update is a normal committed re-render, with no effect, no
+ * `setState`, and no window of disagreement to hide.
  */
 export function useProgress(): Progress {
-  const [progress, setProgress] = useState<Progress>(emptyProgress);
-
-  useEffect(() => {
-    const sync = () => setProgress(readProgress());
-    sync();
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === KEY) sync();
-    };
-    listeners.add(sync);
-    window.addEventListener('storage', onStorage);
-    return () => {
-      listeners.delete(sync);
-      window.removeEventListener('storage', onStorage);
-    };
-  }, []);
-
-  return progress;
+  return useSyncExternalStore(subscribeProgress, getProgressSnapshot, () => PROGRESS_EMPTY);
 }
 
 /** Toggle helper for a "mark complete" button; returns the new state. */

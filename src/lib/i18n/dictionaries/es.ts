@@ -9,6 +9,7 @@ export const es: Dictionary = {
     learn: 'Aprender',
     playground: 'Laboratorio',
     play: 'Lab',
+    exam: 'Examen',
     search: 'Buscar lecciones, snippets y tablas',
     searchAria: 'Abrir búsqueda',
   },

@@ -291,6 +291,243 @@ The last line is the whole lesson of the two levels. `READ COMMITTED` took a fre
 `SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;` names the blockers directly; before PG 9.6 you had to derive it by joining `pg_locks` to itself on `granted = false`. The companion setting is `idle_in_transaction_session_timeout` (also PG 9.6+), which terminates a session that sits `idle in transaction` too long — set it per role with `ALTER ROLE api_service SET idle_in_transaction_session_timeout = '30s';` and the forgotten-`BEGIN` horizon problem stops being an incident.
 </Callout>
 
+## In your application
+
+Every framework below wraps the same three statements — `BEGIN`, the work, `COMMIT` — and
+the one that matters is what happens when `COMMIT` is refused: a serialization failure
+(`40001`) is not a bug in your transaction, it is Postgres asking you to run it again.
+
+<StackTabs
+  persistKey="transactions"
+  tabs={[
+    { id: "nestjs", label: "NestJS" },
+    { id: "fastapi", label: "FastAPI" },
+    { id: "nextjs", label: "Next.js" },
+  ]}
+>
+
+<>
+**NestJS + TypeORM**: `DataSource.transaction()` hands you a manager bound to one
+connection and handles `COMMIT`/`ROLLBACK` by exception flow. It does **not** retry for
+you — a `SERIALIZABLE` transaction that loses a read-dependency race exits with `40001`
+and the request must call the whole function again. That retry loop belongs *around*
+`transaction()`, never inside the callback: by the time Postgres aborts, everything the
+callback did is already gone.
+
+<ProjectFiles
+  title="nestjs-transactions/ (retry around the transaction, not inside it)"
+  initialSelected="src/orders/orders.service.ts"
+  files={[
+    {
+      path: "src/orders/orders.service.ts",
+      label: "orders.service.ts",
+      lang: "ts",
+      content: `import { Injectable } from '@nestjs/common';
+import { DataSource, QueryFailedError } from 'typeorm';
+
+@Injectable()
+export class OrdersService {
+  constructor(private readonly dataSource: DataSource) {}
+
+  /**
+   * SERIALIZABLE + a retry wrapper: the whole transaction is the unit of
+   * retry, because a serialization failure (40001) aborts every statement
+   * it already ran. Retrying *inside* runSerializable would reuse aborted
+   * work — there is nothing left to resume from.
+   */
+  async chargeWithRetry(orderId: number, amount: number, attempts = 5) {
+    for (let i = 0; ; i++) {
+      try {
+        return await this.runSerializable(orderId, amount);
+      } catch (err) {
+        const code = (err as QueryFailedError).code;
+        // 40001 serialization_failure, 40P01 deadlock_detected
+        if ((code !== '40001' && code !== '40P01') || i >= attempts) throw err;
+        await new Promise((r) => setTimeout(r, 2 ** i * 20 + Math.random() * 20));
+      }
+    }
+  }
+
+  private runSerializable(orderId: number, amount: number) {
+    return this.dataSource.transaction('SERIALIZABLE', async (em) => {
+      // No FOR UPDATE needed: SERIALIZABLE detects the conflict at COMMIT
+      // and aborts one writer — that is what the retry above is for.
+      const order = await em.findOneOrFail('Order', { where: { id: orderId } });
+      await em.query(
+        'UPDATE orders SET total = total + $2, status = $3 WHERE id = $1',
+        [orderId, amount, 'doing'],
+      );
+      return em.findOneOrFail('Order', { where: { id: orderId } });
+    });
+  }
+}`,
+    },
+  ]}
+/>
+
+This is the exact statement sequence `runSerializable` sends for a committed
+transaction — the `UPDATE` then the re-read the caller sees:
+
+<SqlBlock title="NestJS: the statements dataSource.transaction() sends (id 7000 is 'todo')" sql={`BEGIN ISOLATION LEVEL SERIALIZABLE;
+UPDATE orders SET total = total + 10, status = 'doing' WHERE id = 7000;
+SELECT status FROM orders WHERE id = 7000;
+COMMIT;`} expect="doing — the UPDATE landed and COMMIT was not refused: nobody raced this row in the lab's single session." assert={[{rows: 1, firstCell: 'doing'}]} />
+</>
+
+<>
+**FastAPI + SQLAlchemy**: the `session.begin()` context manager *is* the transaction —
+commit on clean exit, rollback on exception, and `Depends` guarantees the session dies
+with the request. `SAVEPOINT` (emitted automatically by `session.begin_nested()`) is the
+piece people reach for when one failing row shouldn't discard the batch: a `ROLLBACK TO
+SAVEPOINT` unwinds back to the mark, and the work before the mark stays.
+
+<ProjectFiles
+  title="fastapi-transactions/ (one session per request)"
+  initialSelected="app/db.py"
+  files={[
+    {
+      path: "app/db.py",
+      label: "db.py",
+      lang: "py",
+      content: `from collections.abc import Iterator
+
+import psycopg
+from fastapi import Depends, HTTPException
+from psycopg.rows import dict_row
+
+from .auth import get_current_user
+from .db import DATABASE_URL
+
+def get_conn(user=Depends(get_current_user)) -> Iterator[psycopg.Connection]:
+    """One connection per request, transaction scope = the request's unit of work.
+
+    psycopg's 'with conn' is BEGIN-on-entry / COMMIT-on-clean-exit /
+    ROLLBACK-on-exception. A forgotten commit is impossible: the block
+    ending IS the commit.
+    """
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.transaction():          # explicit scope; nests into savepoints
+            yield conn
+
+
+def charge(conn=Depends(get_conn), order_id: int, amount: float):
+    # begin_nested = SAVEPOINT: a failure in this block rewinds only this block.
+    try:
+        with conn.transaction():
+            conn.execute(
+                "UPDATE orders SET note = %s WHERE id = %s", ("paid", order_id)
+            )
+    except psycopg.errors.RaiseException:
+        raise HTTPException(422, "charge rejected; the rest of the batch stands")`,
+    },
+    {
+      path: "app/routers/orders.py",
+      label: "orders.py",
+      lang: "py",
+      content: `from fastapi import APIRouter, Depends
+
+from ..db import get_conn
+
+router = APIRouter(prefix="/orders")
+
+@router.post("/{order_id}/charge")
+def charge(order_id: int, amount: float, conn=Depends(get_conn)):
+    # Same request, same transaction as get_conn's SAVEPOINT blocks.
+    conn.execute(
+        "UPDATE orders SET total = total + %s WHERE id = %s", (amount, order_id)
+    )
+    row = conn.execute(
+        "SELECT total FROM orders WHERE id = %s", (order_id,)
+    ).fetchone()
+    return {"total": row[0]}   # committed when the dependency's block exits`,
+    },
+  ]}
+/>
+
+The savepoint semantics the dependency relies on, run directly — note what survives the
+partial rollback:
+
+<SqlBlock title="FastAPI: ROLLBACK TO SAVEPOINT rewinds only the marked block" sql={`BEGIN;
+UPDATE orders SET note = 'paid' WHERE id = 7001;   -- batch row A
+SAVEPOINT charge;
+UPDATE orders SET note = 'paid' WHERE id = 7002;   -- batch row B — fails later
+ROLLBACK TO charge;                                -- B unwinds, A stands
+SELECT id, note FROM orders WHERE id = 7001;
+COMMIT;`} expect="row 7001 still carries note='paid' — the savepoint protected it; only the post-SAVEPOINT work was rewound." assert={[{rows: 1, firstCell: 7001}]} />
+</>
+
+<>
+**Next.js** route handlers run on serverless instances: every invocation needs its own
+connection — from a pool, not a cold `new Client` — and its own transaction, because two
+lambda instances sharing a pool entry would share a snapshot. The same `40001` retry loop
+as NestJS applies; `REPEATABLE READ` is usually enough (retry only on genuine write-write
+conflicts, `40001`), and `idempotency_key` on the request makes the retry safe to send.
+
+<ProjectFiles
+  title="nextjs-transactions/ (pooled connection, request-scoped tx)"
+  initialSelected="app/api/orders/[id]/charge/route.ts"
+  files={[
+    {
+      path: "app/api/orders/[id]/charge/route.ts",
+      label: "route.ts",
+      lang: "ts",
+      content: `import { NextRequest, NextResponse } from 'next/server';
+import { pool } from '@/lib/db';
+
+const RETRYABLE = new Set(['40001', '40P01']);   // serialization, deadlock
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;                    // params is async in this version
+  const { amount, idempotencyKey } = await req.json();
+  if (!idempotencyKey) {
+    return NextResponse.json({ error: 'idempotency_key required' }, { status: 400 });
+  }
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+      await client.query(
+        'UPDATE orders SET total = total + $2, status = $3 WHERE id = $1',
+        [id, amount, 'doing'],
+      );
+      const { rows } = await client.query(
+        'SELECT total FROM orders WHERE id = $1', [id],
+      );
+      await client.query('COMMIT');
+      return NextResponse.json({ total: rows[0].total });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      const code = (err as { code?: string }).code;
+      if (!RETRYABLE.has(code ?? '')) {
+        return NextResponse.json({ error: 'charge failed' }, { status: 500 });
+      }
+      // exponential backoff + jitter: 5 → 10 → 20 → 40 → 80 ms
+      await new Promise((r) => setTimeout(r, 2 ** attempt * 5 + Math.random() * 10));
+    } finally {
+      client.release();   // every path — a leaked client is a permanently lost pool slot
+    }
+  }
+  return NextResponse.json({ error: 'too much contention' }, { status: 503 });
+}`,
+    },
+  ]}
+/>
+
+The happy path is three statements. What the retry loop buys you is that the *unhappy*
+path — `ROLLBACK`, back off, replay — converges instead of leaking:
+
+<SqlBlock title="Next.js: the handler's happy path, REPEATABLE READ (id 7002 is 'todo')" sql={`BEGIN ISOLATION LEVEL REPEATABLE READ;
+UPDATE orders SET status = 'doing' WHERE id = 7002;
+SELECT status FROM orders WHERE id = 7002;
+COMMIT;`} expect="doing — committed; and because this snapshot never moved, the re-read cannot differ from what the UPDATE saw." assert={[{rows: 1, firstCell: 'doing'}]} />
+</>
+
+</StackTabs>
+
 ## Check yourself
 
 1. A row has `xmin = 500` and `xmax = 0`. What does that mean? What about `xmin = 500`, `xmax = 501`?

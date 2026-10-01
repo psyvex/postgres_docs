@@ -9,7 +9,7 @@
 
 Planned topics are already listed in the registry with `status: 'planned'`; flip them when ready.
 
-Nothing else to remember for the plumbing: `status: 'ready'` is also what publishes the lesson. The page's `<title>`, description, canonical, `sitemap.xml` entry and 1200×630 share card are all generated from the same entry — `title` becomes the headline, `tagline` the preview text, `track` the chip on the card, `minutes` and (for a `status: 'break'` lesson) `challengeCount` the line in its corner. Fill every field; a missing `tagline` shows up as an empty preview, not a build error.
+Nothing else to remember for the plumbing: `status: 'ready'` is also what publishes the lesson. The page's `<title>`, description, canonical, `sitemap.xml` entry and 1200×630 share card are all generated from the same entry — `title` becomes the headline, `tagline` the preview text, `track` the chip on the card, and `minutes` the line in its corner. The block count on the card and the lesson's progress denominator are **not** fields: they are counted from your `.mdx` by `src/content/graded.mjs` — a self-closing `<SqlBlock>` that is not `static` and has an `assert` array on one line — which is the same rule CI runs the lesson against. So the way to give a lesson a bigger denominator is to write more graded blocks, not to edit a number, and the way to break the header is to write an `assert` the regex cannot see (wrapped across lines, or a children-form block), which grades nothing in CI and counts nothing in the UI. `status: 'break'` changes only the accent — skull on the card and in the header — never the count. Fill every field; a missing `tagline` shows up as an empty preview, not a build error.
 
 ## Writing rules
 

@@ -9,6 +9,7 @@ export const zh: Dictionary = {
     learn: '学习',
     playground: '实验场',
     play: '实验',
+    exam: '考试',
     search: '搜索课程、片段和数据表',
     searchAria: '打开搜索',
   },

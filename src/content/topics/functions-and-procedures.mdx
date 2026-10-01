@@ -184,7 +184,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION public_task_count(int) FROM PUBLIC;
 GRANT  EXECUTE ON FUNCTION public_task_count(int) TO app_anon;`} />
 
-<SqlBlock title="Anonymous: counting works…" as="anon" sql={`SELECT public_task_count(1) AS acme_tasks;`} expect="4, even though app_anon has no SELECT on tasks." />
+<SqlBlock title="Anonymous: counting works…" as="anon" sql={`SELECT public_task_count(1) AS acme_tasks;`} expect="4, even though app_anon has no SELECT on tasks." assert={[{ rows: 1, firstCell: 4 }]} />
 
 <SqlBlock title="…reading still doesn't" as="anon" sql={`SELECT title FROM tasks;`} expect="ERROR: permission denied for table tasks" />
 

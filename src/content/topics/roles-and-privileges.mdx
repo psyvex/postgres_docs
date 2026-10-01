@@ -54,7 +54,7 @@ To read `lab.tasks`, a role needs **all** of: `CONNECT` on the database, `USAGE`
 
 <PrivilegeGrid />
 
-<SqlBlock title="Anonymous can read organizations…" as="anon" sql={`SELECT * FROM organizations;`} />
+<SqlBlock title="Anonymous can read organizations…" as="anon" sql={`SELECT * FROM organizations;`} assert={[{ rows: 2, columns: ['id', 'name', 'plan'] }]} />
 
 <SqlBlock title="…but not tasks" as="anon" sql={`SELECT * FROM tasks;`} expect="ERROR: permission denied for table tasks" />
 

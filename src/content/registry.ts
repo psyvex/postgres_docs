@@ -14,13 +14,16 @@ export type Topic = {
   title: string;
   icon: IconName;
   tagline: string;
-  track: 'Security' | 'Programming' | 'Foundations' | 'Performance' | 'Operations' | 'Integrations';
+  track: 'Security' | 'Programming' | 'Foundations' | 'Performance' | 'Operations';
   status: 'ready' | 'planned' | 'break';
   /** Minutes to read + try the examples. */
   minutes?: number;
   references?: Reference[];
-  /** Number of graded challenge blocks. Used by break-it lesson headers. */
-  challengeCount?: number;
+  /**
+   * Deliberately no `challengeCount`: a number typed here is a number that can drift from the
+   * lesson. Graded-block counts are counted from the MDX by `content/graded.mjs` — the same rule
+   * CI executes — and consumed through `content/lesson-meta.ts`.
+   */
 };
 
 const PG_DOCS = 'https://www.postgresql.org/docs/current';
@@ -133,7 +136,6 @@ export const topics: Topic[] = [
     track: 'Security',
     status: 'break',
     minutes: 15,
-    challengeCount: 8,
   },
   // Roadmap, shown on the home page so the lab grows into a full Postgres handbook.
   {
@@ -201,72 +203,42 @@ export const topics: Topic[] = [
       { title: 'Backup and Restore (dump/restore discussion)', url: `${PG_DOCS}/backup-dump.html` },
     ],
   },
-  // ─── Integrations ────────────────────────────────────────────────────────────
-  // T6 lessons: real project code + live SQL — see docs/TASKS.md T6 tier.
-  {
-    slug: 'nestjs-rls',
-    title: 'NestJS + RLS',
-    icon: 'codeTree',
-    tagline: 'Attach RLS policies to a NestJS app with a per-request connection middleware.',
-    track: 'Integrations',
-    status: 'ready',
-    minutes: 20,
-    references: [
-      { title: 'NestJS DataSource / TypeORM', url: 'https://docs.nestjs.com/techniques/database' },
-      { title: 'Middleware in NestJS', url: 'https://docs.nestjs.com/middleware' },
-      { title: 'Pg RLS + Node.js (blog)', url: 'https://neon.tech/postgresql/learn/postgresql-getting-started/fundamentals/postgresql-row-level-security-nodejs' },
-    ],
-  },
-  {
-    slug: 'fastapi-rls',
-    title: 'FastAPI + RLS',
-    icon: 'codeTree',
-    tagline: 'Set per-request identity with psycopg2 and a FastAPI dependency.',
-    track: 'Integrations',
-    status: 'planned',
-    minutes: 20,
-  },
-  {
-    slug: 'nextjs-rls',
-    title: 'Next.js + RLS',
-    icon: 'codeTree',
-    tagline: 'Middleware, server actions and API routes — all three layers with RLS.',
-    track: 'Integrations',
-    status: 'planned',
-    minutes: 20,
-  },
-  {
-    slug: 'real-indexes',
-    title: 'Indexes in Practice',
-    icon: 'codeTree',
-    tagline: 'Adding composite, partial and expression indexes to a real app schema.',
-    track: 'Integrations',
-    status: 'planned',
-    minutes: 20,
-  },
-  {
-    slug: 'real-transactions',
-    title: 'Transactions in Practice',
-    icon: 'codeTree',
-    tagline: 'Serializable isolation, advisory locks and retry loops in NestJS.',
-    track: 'Integrations',
-    status: 'planned',
-    minutes: 20,
-  },
+  // ─── Operations (cont.) ─────────────────────────────────────────────────────
+  // T6 framework content (NestJS / FastAPI / Next.js) lives *inside* the concept
+  // lessons it implements, as "In your application" stack tabs — see
+  // docs/ARCHITECTURE.md ## Lessons. It is deliberately not navigable on its own.
   {
     slug: 'live-database',
     title: 'Connect Your Database',
     icon: 'codeTree',
     tagline: 'Wire the playground to your own Postgres instance and run any lesson live.',
-    track: 'Integrations',
-    status: 'planned',
-    minutes: 5,
+    track: 'Operations',
+    status: 'ready',
+    minutes: 15,
+    references: [
+      { title: 'Client Authentication (pg_hba.conf)', url: `${PG_DOCS}/auth-pg-hba.html` },
+      { title: 'Configuring the database with postgresql.conf', url: `${PG_DOCS}/runtime-config.html` },
+      { title: 'pg_stat_activity view', url: `${PG_DOCS}/monitoring-stats.html#PG-STAT-ACTIVITY-VIEW` },
+      { title: 'Connection pooling (PgBouncer)', url: 'https://www.pgbouncer.org/' },
+      { title: 'Database Roles', url: `${PG_DOCS}/user-manag.html` },
+    ],
   },
 ];
 
-export const readyTopics = topics.filter((t) => t.status === 'ready' || t.status === 'break');
-export const getTopic = (slug: string) =>
-  topics.find((t) => t.slug === slug && (t.status === 'ready' || t.status === 'break'));
+/**
+ * A lesson the reader can actually open: it has content, a route, and should be *linked*.
+ *
+ * Stated negatively — "not planned" — because the positive form is what broke. Every surface that
+ * decides whether to link asked its own question, and `TopicSidebar` asked `status === 'ready'`,
+ * which silently filed the shipped `break-rls` lab under `soon`: routable at `/learn/break-rls`,
+ * findable in ⌘K, featured in the home page's break-it section, and labelled unreleased in the one
+ * piece of navigation that is open on every lesson. A third `status` would reproduce that exactly.
+ * Ask this instead, so `planned` is the only thing that hides a lesson.
+ */
+export const isPublished = (t: Pick<Topic, 'status'>) => t.status !== 'planned';
+
+export const readyTopics = topics.filter(isPublished);
+export const getTopic = (slug: string) => topics.find((t) => t.slug === slug && isPublished(t));
 
 /** Tracks in the order the curriculum teaches them. */
 export const TRACK_ORDER: Topic['track'][] = [
@@ -275,7 +247,6 @@ export const TRACK_ORDER: Topic['track'][] = [
   'Foundations',
   'Performance',
   'Operations',
-  'Integrations',
 ];
 
 

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
 import { useMotionPresets } from '@/lib/motion';
-import { topics } from '@/content/registry';
+import { isPublished, topics } from '@/content/registry';
 import { PERSONAS as PERSONAS_CANONICAL } from '@/lib/sql/session';
 import { Icon } from '@/components/icons';
 import type { IconName } from '@/components/icons';
@@ -40,9 +40,11 @@ const SECTIONS = [
   { id: 'page', label: 'Pages', icon: Settings },
 ] as const;
 
-// Pages with no other global entry point (the header has no room for them at 320 px).
+// Pages with no other global entry point (the header has no room for them at 320 px). Exam is in the
+// header too — it is listed here so ⌘K finds it by name, which the header label alone does not give.
 const PAGES: PageItem[] = [
   { id: 'pg-settings', type: 'page', title: 'Storage & privacy', description: 'List and erase what this browser holds: AI cache, SQL, translations, progress', href: '/settings' },
+  { id: 'pg-exam', type: 'page', title: 'Exam', description: 'Host a timed exam and hand out a code, or join one — visual SQL questions, per-participant papers, live leaderboard', href: '/exam' },
 ];
 
 const SNIPPETS: SnippetItem[] = [
@@ -73,8 +75,7 @@ const PERSONAS: PersonaItem[] = PERSONAS_CANONICAL.map((p) => ({
 }));
 
 const ALL_ITEMS: Item[] = [
-  ...topics
-    .filter((t) => t.status === 'ready' || t.status === 'break')
+  ...topics.filter(isPublished)
     .map((t) => ({
       id: `l-${t.slug}`,
       type: 'lesson' as const,

@@ -85,7 +85,7 @@ export default function Home() {
 
       {break_.length > 0 && (
         <section className="py-16">
-          <SectionHeading eyebrow="Break-it labs" title={<>Turn the lesson <span className="text-warn">against itself.</span></>} copy="You are Bob. Your job: break the RLS policy. Every challenge is a graded assertion, and the answer card tells you what went wrong." />
+          <SectionHeading eyebrow="Break-it labs" title={<>Turn the lesson <span className="text-warn">against itself.</span></>} copy="You are the attacker, not the learner. Your job: break the guard the lesson just built. Every challenge is a graded assertion, and the answer card tells you what went wrong." />
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
             {break_.map((t, i) => (
               <Reveal key={t.slug} index={i}>

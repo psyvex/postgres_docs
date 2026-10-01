@@ -84,6 +84,18 @@ html {
   background: var(--bg);
   color: var(--text);
   color-scheme: light;
+  /* In-page anchors — the "On this page" list, ⌘K's section jumps, the lesson pager — arrive instead of
+     teleporting. A lesson is ~8000 px tall, so a `#heading` jump is currently a hard cut with no cue
+     about where the reader landed. Scoped to `no-preference` rather than added to the global kill-switch
+     at the bottom of this file, which zeroes transition/animation *duration* and cannot reach scroll
+     behaviour at all. `scroll-behavior` does not inherit, so this leaves the sidebar's own scrolling
+     (and any future `element.scrollTo`) under explicit control instead of smooth by accident. */
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 html.dark {
   color-scheme: dark;

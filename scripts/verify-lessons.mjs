@@ -17,11 +17,11 @@ const PERSONAS = {
 };
 
 import { gradeChecks } from '../src/lib/learn/check.mjs';
+// The block rule is not duplicated here on purpose: this file, the lesson page and the share card
+// all count graded blocks, and when the page kept its own regex it read 25 of `jsonb`'s 40.
+import { sqlBlocks, ASSERT_ATTR as ASSERT } from '../src/content/graded.mjs';
 
 const unescape = (s) => s.replace(/\\([\\`$])/g, '$1');
-const BLOCK = /<SqlBlock\b([\s\S]*?)sql=\{`([\s\S]*?)`\}([\s\S]*?)\/>/g;
-// Asserts are authored on one line: assert={[{ rows: 7 }, { error: 'permission denied' }]}
-const ASSERT = /assert=\{(\[[^\n]*\])\}/;
 
 /**
  * PGlite's raw results → the `RunResult` shape the app and the grader speak. Mirrors
@@ -57,11 +57,9 @@ for (const file of files) {
   await db.exec(SEED_SQL);
   await db.exec('RESET ALL');
   console.log(`\n━━ ${file}`);
-  for (const m of mdx.matchAll(BLOCK)) {
-    const attrs = m[1] + m[3];
-    if (/\bstatic\b/.test(attrs)) continue;
-    const title = attrs.match(/title="([^"]*)"/)?.[1] ?? '(untitled)';
-    const as = attrs.match(/\bas="([^"]*)"/)?.[1] ?? 'owner';
+  for (const block of sqlBlocks(mdx)) {
+    if (block.isStatic) continue;
+    const { attrs, title, persona: as } = block;
     const expectsError = /expect="ERROR/.test(attrs);
     const p = PERSONAS[as];
     const prefix = [
@@ -86,7 +84,7 @@ for (const file of files) {
     }
 
     try {
-      const res = await db.exec(`${prefix.join(';\n')};\n${unescape(m[2])}`);
+      const res = await db.exec(`${prefix.join(';\n')};\n${unescape(block.sql)}`);
       const last = res.filter((r) => r.fields.length).at(-1);
       const summary = last ? `${last.rows.length} row(s) ${JSON.stringify(last.rows[0] ?? {}).slice(0, 90)}` : 'done';
       const verdict = checks ? gradeChecks(toResult(res), checks, prefix.length) : null;

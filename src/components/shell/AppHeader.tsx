@@ -17,10 +17,24 @@ function openPalette() {
 }
 
 // `tKey`/`tShortKey` are looked up against the dictionary at render time so the labels follow the
-// interface language. `short` is the label used below `sm` (T5-6).
-const NAV: { href: string; match: string; tKey: 'learn' | 'playground'; tShortKey: 'learn' | 'play' }[] = [
+// interface language. `short` is the label used below `sm` (T5-6). `exam` needs no separate short form:
+// every locale's word for it is six characters or fewer.
+//
+// Three items is the most this row can carry at 320 px, and only because the database chip stopped
+// spending width on a word (see `DbModeSwitch`). Measured with all three labels in all six interface
+// languages at 320 px: `scrollWidth` equals `clientWidth` (309) and the rightmost edge of anything in
+// the header is 309. Spanish is the tight case — `Aprender · Lab · Examen` is 173 px of nav against
+// English's 142 — so any fourth item, or any word made longer, has to be measured in Spanish and not
+// in English.
+const NAV: {
+  href: string;
+  match: string;
+  tKey: 'learn' | 'playground' | 'exam';
+  tShortKey: 'learn' | 'play' | 'exam';
+}[] = [
   { href: '/learn/row-level-security', match: '/learn', tKey: 'learn', tShortKey: 'learn' },
   { href: '/playground', match: '/playground', tKey: 'playground', tShortKey: 'play' },
+  { href: '/exam', match: '/exam', tKey: 'exam', tShortKey: 'exam' },
 ];
 
 export function AppHeader() {

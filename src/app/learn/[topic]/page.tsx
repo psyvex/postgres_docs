@@ -10,27 +10,8 @@ import { MiniSchema } from '@/components/learn/MiniSchema';
 import { LessonTranslator } from '@/components/learn/LessonTranslator';
 import { LessonAssistant } from '@/components/learn/LessonAssistant';
 import { LessonProgress } from '@/components/learn/LessonProgress';
-import { BreakLessonHeader } from '@/components/learn/BreakLessonHeader';
 import { lessonMeta as lessonDocMeta } from '@/lib/site-meta';
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-
-/** Hash + size of the lesson source: versions cached translations and sizes the progress bar.
- *  Also counts runnable blocks with `assert=` so the progress bar can show "3 of 8 checks solved". */
-function lessonMeta(slug: string) {
-  try {
-    const raw = readFileSync(path.join(process.cwd(), 'src/content/topics', `${slug}.mdx`), 'utf8');
-    const assertCount = (raw.match(/<SqlBlock(?![^>]*\bstatic\b)[^>]*\bassert=/g) ?? []).length;
-    return {
-      version: createHash('sha1').update(raw).digest('hex').slice(0, 12),
-      length: raw.length,
-      assertCount,
-    };
-  } catch {
-    return { version: 'dev', length: 20_000, assertCount: 0 };
-  }
-}
+import { lessonMeta as lessonSourceMeta } from '@/content/lesson-meta';
 import { Icon, type IconName } from '@/components/icons';
 
 export const dynamicParams = false;
@@ -51,7 +32,7 @@ export default async function TopicPage({ params }: { params: Promise<{ topic: s
   const { topic: slug } = await params;
   const topic = getTopic(slug);
   const Content = await loadTopic(slug);
-  const source = lessonMeta(slug);
+  const source = lessonSourceMeta(slug);
   if (!topic || !Content) notFound();
 
   const index = readyTopics.findIndex((t) => t.slug === slug);
@@ -72,10 +53,13 @@ export default async function TopicPage({ params }: { params: Promise<{ topic: s
           </div>
         </header>
 
-        {topic.status === 'break' && topic.challengeCount != null
-          ? <BreakLessonHeader slug={slug} totalChecks={source.assertCount} challengeTotal={topic.challengeCount} />
-          : <LessonProgress slug={slug} totalChecks={source.assertCount} />
-        }
+        {/* One header for every lesson type: the count always comes from the lesson's own graded
+            blocks, and `break` only changes the accent — never the denominator. */}
+        <LessonProgress
+          slug={slug}
+          gradedCount={source.gradedCount}
+          variant={topic.status === 'break' ? 'break' : 'default'}
+        />
         <LessonTranslator
           slug={slug}
           version={source.version}

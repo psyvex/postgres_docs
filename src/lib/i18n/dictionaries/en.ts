@@ -17,6 +17,7 @@ export const en = {
     playground: 'Playground',
     /** Below `sm`, where the row competes with the database chip (T5-6). */
     play: 'Play',
+    exam: 'Exam',
     search: 'Search lessons, snippets and tables',
     searchAria: 'Open search',
   },

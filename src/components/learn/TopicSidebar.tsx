@@ -1,8 +1,15 @@
 'use client';
 
+/**
+ * This renders on the server, where localStorage does not exist, and then on the client, where it
+ * does — so the checkmarks are the one thing here that can differ between the two. `useProgress`
+ * handles that (see its docblock in `lib/learn/progress.ts`): the server and the first client
+ * render both get `PROGRESS_EMPTY`, and a stored progress entry arrives as an ordinary re-render
+ * instead of a post-paint `setState` that React reads as a hydration mismatch.
+ */
 import Link from 'next/link';
 import clsx from 'clsx';
-import { topics, usedTracks } from '@/content/registry';
+import { isPublished, topics, usedTracks } from '@/content/registry';
 import { Icon } from '@/components/icons';
 import { useProgress } from '@/lib/learn/progress';
 
@@ -21,7 +28,7 @@ export function TopicSidebar({ active }: { active: string }) {
               <ul className="space-y-0.5">
                 {list.map((t) => (
                   <li key={t.slug}>
-                    {t.status === 'ready' ? (
+                    {isPublished(t) ? (
                       <Link
                         href={`/learn/${t.slug}`}
                         className={clsx('flex items-center gap-2 rounded-xl px-2 py-1.5 text-sm font-semibold transition', active === t.slug ? 'bg-brand text-on-brand shadow-card' : 'hover:bg-surface-2')}

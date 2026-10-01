@@ -1,5 +1,6 @@
 import { ImageResponse } from 'next/og';
 import { getTopic, readyTopics } from '@/content/registry';
+import { lessonMeta } from '@/content/lesson-meta';
 import { SITE_NAME } from '@/lib/site';
 
 /**
@@ -37,10 +38,15 @@ export default async function LessonOgImage({ params }: { params: Promise<{ topi
   const t = getTopic(slug);
   if (!t) return new ImageResponse(<div style={{ display: 'flex' }} />, { ...size });
 
+  // The block count is measured from the lesson source rather than typed into the registry, so the
+  // card cannot advertise a number the lesson does not have — and every lesson gets one, not only
+  // the break-it lab. Same `lessonMeta` the page's progress bar divides by.
+  const { gradedCount } = lessonMeta(slug);
   const isBreak = t.status === 'break';
-  const facts = [isBreak ? `${t.challengeCount ?? 0} challenges` : null, t.minutes ? `${t.minutes} min` : null].filter(
-    Boolean,
-  );
+  const facts = [
+    gradedCount > 0 ? `${gradedCount} ${isBreak ? 'challenges' : 'graded checks'}` : null,
+    t.minutes ? `${t.minutes} min` : null,
+  ].filter(Boolean);
 
   return new ImageResponse(
     (

@@ -1,0 +1,15 @@
+Generated: 2026-10-01T14:47:24.888Z
+Total: 163
+  row-level-security: 110
+  indexes: 4
+  transactions-mvcc: 3
+  functions-and-procedures: 8
+  roles-and-privileges: 24
+  triggers: 8
+  production-security: 6
+
+Dropped: 4
+  g-mvcc-1: duplicate statements — same setup, persona and answer as an earlier item
+  g-sec-2: duplicate statements — same setup, persona and answer as an earlier item
+  g-pm-organizations-anon-read: duplicate statements — same setup, persona and answer as an earlier item
+  g-mvcc-4: G2 vacuous oracle — SELECT 42 also passes

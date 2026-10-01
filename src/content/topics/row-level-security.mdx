@@ -201,6 +201,321 @@ DROP POLICY p ON t;
 SELECT * FROM pg_policies WHERE tablename = 't';  -- inspect
 ALTER TABLE t DISABLE ROW LEVEL SECURITY;         -- off (policies kept)`} />
 
+## In your application
+
+Every framework connects differently, but the contract is identical: take the verified
+identity from the request, run `set_config('app.org_id', …, true)` on the same connection
+the query will use, **inside its transaction**, and let RLS do the filtering. The tab you
+pick here is remembered per lesson.
+
+<StackTabs
+  persistKey="rls"
+  tabs={[
+    { id: "nestjs", label: "NestJS" },
+    { id: "fastapi", label: "FastAPI" },
+    { id: "nextjs", label: "Next.js" },
+  ]}
+>
+
+<>
+**NestJS.** A request-scoped `AuthService` holds the verified JWT payload; a global
+`APP_INTERCEPTOR` writes it into the session with `set_config(…, true)` before every
+handler; the service layer then queries with no `WHERE org_id` anywhere. The interceptor
+is the only place identity is written — one place to audit.
+
+<ProjectFiles
+  title="nestjs-rls/ (three files that carry all the security)"
+  initialSelected="src/auth/rls.interceptor.ts"
+  files={[
+    {
+      path: "src/auth/rls.interceptor.ts",
+      label: "rls.interceptor.ts",
+      lang: "ts",
+      content: `import {
+  Injectable, NestInterceptor, ExecutionContext, CallHandler,
+} from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { AuthService } from './auth.service';
+
+/**
+ * Writes the verified request identity into the Postgres session before
+ * every handler. Runs after the guard (JwtAuthGuard), so AuthService is
+ * guaranteed to hold a verified payload by the time we read from it.
+ *
+ * The third argument to set_config is is_local = TRUE: the setting dies
+ * at COMMIT/ROLLBACK, so a pooled connection can never hand one tenant's
+ * identity to the next request.
+ */
+@Injectable()
+export class RlsInterceptor implements NestInterceptor {
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly auth: AuthService,        // Scope.REQUEST instance
+  ) {}
+
+  async intercept(ctx: ExecutionContext, next: CallHandler) {
+    const orgId = this.auth.getOrgId();
+    const memberId = this.auth.getMemberId();
+
+    if (orgId !== null && memberId !== null) {
+      await this.dataSource.query(
+        'SELECT set_config($1, $2, true), set_config($3, $4, true)',
+        ['app.org_id', String(orgId), 'app.member_id', String(memberId)],
+      );
+    }
+    return next.handle();   // handler runs on the same connection, same session
+  }
+}`,
+    },
+    {
+      path: "src/auth/auth.service.ts",
+      label: "auth.service.ts",
+      lang: "ts",
+      content: `import { Injectable, Scope, Inject } from '@nestjs/core';
+import { REQUEST } from '@nestjs/core';
+import type { Request } from 'express';
+
+/**
+ * Scope.REQUEST: one instance per request, so the verified identity can
+ * live on the instance without leaking across requests. The guard rejects
+ * unauthenticated calls before this is ever read by RlsInterceptor.
+ */
+@Injectable({ scope: Scope.REQUEST })
+export class AuthService {
+  private memberId: number | null = null;
+  private orgId: number | null = null;
+
+  constructor(@Inject(REQUEST) private readonly request: Request) {
+    const token = (this.request.headers as Record<string, string>)
+      .authorization?.replace('Bearer ', '');
+    if (token) {
+      const payload = this.verifyJwt(token);   // signature verified, never trust raw claims
+      this.memberId = payload.sub;
+      this.orgId = payload.orgId;
+    }
+  }
+
+  getMemberId() { return this.memberId; }
+  getOrgId() { return this.orgId; }
+
+  private verifyJwt(token: string) {
+    // Replace with your real verifier, e.g.:
+    // return jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
+    throw new Error('wire me to a real verifier');
+  }
+}`,
+    },
+    {
+      path: "src/tasks/tasks.service.ts",
+      label: "tasks.service.ts",
+      lang: "ts",
+      content: `import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Task } from './task.entity';
+
+/**
+ * There is no "org-scoped repository" method and no WHERE org_id anywhere.
+ * That is the point: a future developer who forgets to filter cannot leak,
+ * because the database never hands this session another tenant's rows.
+ */
+@Injectable()
+export class TasksService {
+  constructor(
+    @InjectRepository(Task) private readonly repo: Repository<Task>,
+  ) {}
+
+  findAll() {                       // RLS already scoped this to one org
+    return this.repo.find({ order: { id: 'ASC' } });
+  }
+
+  create(data: Partial<Task>) {     // WITH CHECK rejects a foreign org_id
+    return this.repo.save(this.repo.create(data));
+  }
+}`,
+    },
+  ]}
+/>
+
+The live proof, run exactly as the lesson leaves the database. This is the statement
+`TasksService.findAll()` issues — no filter — as Alice, at the end of the lesson:
+
+<SqlBlock title="NestJS: what findAll() sends, as Alice (no WHERE clause)" as="alice" sql={`SELECT id, title, assignee_id FROM tasks ORDER BY id;`} expect="3 rows: every surviving Acme task, nothing from Globex. (id 4 was deleted earlier by Bob; RLS still shows Alice every other org-1 row because she is an org owner.)" assert={[{rows: 3}]} />
+
+One thing this lesson does *not* model: NestJS reuses one connection pool, so the
+interceptor's `set_config(…, true)` must be transaction-local. The reason is covered in
+[the identity section](#passing-the-user-s-identity-to-postgres) above — read it before
+copying the interceptor into a service that runs outside a transaction.
+</>
+
+<>
+**FastAPI.** The Python idiom: a `yield` dependency yields a connection that has already
+stamped the session, and `Depends` guarantees the stamp happens before the endpoint body.
+psycopg3 auto-commits outside explicit transactions, so the stamp **must** be inside one —
+otherwise it survives on the pooled connection.
+
+<ProjectFiles
+  title="fastapi-rls/ (identity via Depends)"
+  initialSelected="app/rls.py"
+  files={[
+    {
+      path: "app/rls.py",
+      label: "rls.py",
+      lang: "py",
+      content: `from collections.abc import Iterator
+from contextlib import contextmanager
+
+import psycopg
+from fastapi import Depends
+
+from .auth import get_current_user          # your verified-JWT dependency
+from .db import DATABASE_URL
+
+@contextmanager
+def tenant_connection(user) -> Iterator[psycopg.Connection]:
+    """A connection whose session already knows who is asking.
+
+    psycopg3 does NOT autocommit inside an explicit transaction: set_config
+    with is_local=True is transaction-scoped, which is what we want — the
+    identity exists exactly as long as the unit of work using it.
+    """
+    with psycopg.connect(DATABASE_URL) as conn:   # 'with' = BEGIN / COMMIT / ROLLBACK
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.org_id', %s, true),"
+                " set_config('app.member_id', %s, true)",
+                (str(user.org_id), str(user.id)),
+            )
+        yield conn
+
+
+def get_db(user=Depends(get_current_user)):
+    """FastAPI dependency: every route gets a stamped connection or nothing."""
+    with tenant_connection(user) as conn:
+        yield conn`,
+    },
+    {
+      path: "app/routers/tasks.py",
+      label: "tasks.py",
+      lang: "py",
+      content: `from fastapi import APIRouter, Depends
+
+from ..rls import get_db
+
+router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+@router.get("/")
+def list_tasks(db=Depends(get_db)):
+    # No WHERE org_id. The session was stamped by get_db before this ran.
+    with db.cursor() as cur:
+        cur.execute("SELECT id, title FROM tasks ORDER BY id")
+        return cur.fetchall()
+
+@router.post("/")
+def create_task(payload: TaskIn, db=Depends(get_db)):
+    # An org_id that isn't yours fails here as DatabaseError(42501),
+    # surfaced by the RLS WITH CHECK, not by application code.
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO tasks (org_id, project_id, title)"
+            " VALUES (%s, %s, %s) RETURNING id",
+            (payload.org_id, payload.project_id, payload.title),
+        )
+        return {"id": cur.fetchone()[0]}`,
+    },
+  ]}
+/>
+
+The cross-org write is what makes the dependency worth having. A client sends a forged
+`org_id`; FastAPI happily forwards it — and the database refuses it:
+
+<SqlBlock title="FastAPI: a forged org_id reaches Postgres anyway — and dies at WITH CHECK" as="alice" sql={`INSERT INTO tasks (org_id, project_id, title) VALUES (2, 3, 'Sneaky task');`} expect="ERROR: new row violates row-level security policy — the endpoint never needed to validate org membership; the policy did it." assert={[{error: 'row-level security policy'}]} />
+
+Why not validate in the endpoint? Because FastAPI endpoints are the *most* numerous
+place a forgotten filter hides. The policy applies to the cron job, the admin shell,
+and the colleague's one-off script; the endpoint-level check applies only to the endpoint.
+</>
+
+<>
+**Next.js App Router.** Route Handlers are **not cached by default** in this version of
+Next.js — good: per-request identity stays per-request. The trap is the opposite
+direction: enable [Cache Components](https://nextjs.org/docs/app/getting-started/caching)
+and wrap the tenant query in `use cache` for speed, and you have just put one tenant's
+rows into a cache every tenant now reads. `cookies()` is async here (`await cookies()`),
+and reading it marks the handler request-scoped.
+
+<ProjectFiles
+  title="nextjs-rls/ (route handler + pooled client)"
+  initialSelected="app/api/tasks/route.ts"
+  files={[
+    {
+      path: "app/api/tasks/route.ts",
+      label: "route.ts",
+      lang: "ts",
+      content: `import { cookies } from 'next/headers';
+import { NextResponse } from 'next/server';
+import { pool } from '@/lib/db';
+import { verifySession } from '@/lib/auth';
+
+// No 'use cache' anywhere near this handler, and nothing it calls may
+// cache tenant rows: this response belongs to one tenant only.
+export async function GET() {
+  const session = await verifySession((await cookies()).get('session')?.value);
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // is_local = true → cleared at COMMIT/ROLLBACK. Pool clients are reused
+    // across requests; a plain SET would leak identity to the next visitor.
+    await client.query(
+      'SELECT set_config($1, $2, true), set_config($3, $4, true)',
+      ['app.org_id', String(session.orgId), 'app.member_id', String(session.sub)],
+    );
+    const { rows } = await client.query('SELECT id, title FROM tasks ORDER BY id');
+    await client.query('COMMIT');
+    return NextResponse.json(rows);           // no WHERE clause — RLS scoped it
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();                          // always: a leaked client is a stuck pool
+  }
+}`,
+    },
+    {
+      path: "lib/db.ts",
+      label: "db.ts",
+      lang: "ts",
+      content: `import { Pool } from 'pg';
+
+// One pool for the whole serverless process, NOT one client per request:
+// each FaaS invocation pays a TCP+TLS handshake per new connection, and
+// policy performance depends on warm connections.
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 10,
+});
+
+// Identity is per-request and transaction-local (see route.ts) — the pool
+// itself is deliberately identity-free.`,
+    },
+  ]}
+/>
+
+The same handler, two requests, two different sessions. Carol's session sees only
+Globex's rows — identical code path to Alice's, nothing in the handler differs:
+
+<SqlBlock title="Next.js: the handler's query under Carol's session" as="carol" sql={`SELECT id, title, assignee_id FROM tasks ORDER BY id;`} expect="3 rows, all Globex (org 2): Login screen, Push notifications, Secret launch plan. Alice's identical query returned Acme's rows — same handler, different session." assert={[{rows: 3}]} />
+
+If you render tasks in a Server Component instead of a Route Handler, the same rule
+applies one layer up: read the session with `await cookies()` (or call `connection()`)
+so the render is request-time — a prerendered tenant page is the same leak in a
+different costume.
+</>
+
+</StackTabs>
+
 ## Check yourself
 
 1. RLS is enabled and there are no policies. What does a normal role see? *(Nothing: default deny.)*

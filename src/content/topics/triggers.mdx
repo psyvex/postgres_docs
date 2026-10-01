@@ -152,7 +152,7 @@ CREATE TRIGGER tasks_freeze_done
        pg_get_triggerdef(oid) AS definition
 FROM pg_trigger
 WHERE tgrelid = 'lab.tasks'::regclass AND NOT tgisinternal
-ORDER BY tgname;`} />
+ORDER BY tgname;`} assert={[{ rows: 4 }]} />
 
 ## Statement triggers with transition tables
 

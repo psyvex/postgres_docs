@@ -107,7 +107,7 @@ FROM pg_proc p
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE p.prosecdef
   AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND NOT coalesce(array_to_string(p.proconfig, ',') LIKE '%search_path=%', false);`} expect="Should return no rows. Any hit is a potential privilege escalation." />
+  AND NOT coalesce(array_to_string(p.proconfig, ',') LIKE '%search_path=%', false);`} expect="Should return no rows. Any hit is a potential privilege escalation." assert={[{ rows: 0 }]} />
 
 ## Layer 6: auditing and monitoring
 

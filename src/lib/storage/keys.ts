@@ -87,6 +87,10 @@ const KNOWN: { match: (key: string) => boolean; info: StorageKeyInfo }[] = [
     match: (k) => k === 'postgres-lab:theme',
     info: { label: 'Theme', detail: 'Light or dark. Applied before first paint, so it is read from a script in the document head.', group: 'appearance' },
   },
+  {
+    match: (k) => k.startsWith('postgres-lab:stack:'),
+    info: { label: 'Lesson stack tab', detail: 'Which framework tab (NestJS / FastAPI / Next.js) was last selected in a lesson.', group: 'appearance' },
+  },
 ];
 
 export function describeKey(key: string): StorageKeyInfo {

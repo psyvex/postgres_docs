@@ -81,26 +81,30 @@ export function DbModeSwitch() {
     });
   };
 
+  // One string for three jobs: the chip's text at `sm` and up, its accessible name, and its tooltip.
+  const chipLabel = mode === 'local' ? t.dbMode.browserChip : `${t.mode.live} · ${connection.database}`;
+
   return (
     <div className="relative" ref={panelRef}>
+      {/*
+        Below `sm` the chip is a dot and nothing else, because its word is what breaks the 320 px row:
+        the header needs 329 px of content in English and **373** px in Spanish, in a 309 px viewport.
+        The previous fix here shortened the word (`Browser DB` → `Browser`), which is a budget spent in
+        one language and re-spent by every other locale — `Navegador` is longer than the English short
+        form, so the same row overflowed again the moment the interface language changed. A dot costs the
+        same pixels wherever the UI is read. The mode and the database name are not lost, only moved out
+        of the width budget: they are the button's accessible name and tooltip, and the first line of the
+        panel the dot opens.
+      */}
       <button
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label={chipLabel}
+        title={chipLabel}
         className="flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-semibold shadow-card hover:border-brand"
       >
         <span className={clsx('h-2 w-2 shrink-0 rounded-full', mode === 'local' ? 'bg-good' : 'bg-accent')} />
-        {/* Below `sm` the chip is the widest thing in the header row, so it says less: "Browser"
-            reads the same, and a long database name is clipped instead of pushing the page sideways. */}
-        {mode === 'local' ? (
-          <>
-            <span className="hidden sm:inline">{t.dbMode.browserChip}</span>
-            <span className="sm:hidden">{t.mode.browser}</span>
-          </>
-        ) : (
-          <>
-            <span className="hidden sm:inline">{`${t.mode.live} · ${connection.database}`}</span>
-            <span className="inline-block max-w-[9ch] truncate sm:hidden">{connection.database}</span>
-          </>
-        )}
+        <span className="hidden sm:inline">{chipLabel}</span>
       </button>
 
       <AnimatePresence>

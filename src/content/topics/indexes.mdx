@@ -214,6 +214,175 @@ Since **PG 14**, `CREATE INDEX CONCURRENTLY` skips the second table scan when no
 1. `EXPLAIN (ANALYZE, BUFFERS)` the slow query. **2.** Find the node with the biggest share of the time — usually a `Seq Scan` with a `Filter`. **3.** Ask whether a `WHERE` column is selective enough to be worth seeking on. **4.** Add the one index, `ANALYZE`, `EXPLAIN` again. **5.** Compare. If the plan didn't change, the index doesn't match the query — an expression, a leading column, or a cast is usually the culprit.
 </Callout>
 
+## In your application
+
+The query from this lesson — find every event for one user, sorted by time — is the same SQL
+in every framework. The migration that adds the index is what differs.
+
+<StackTabs
+  persistKey="indexes"
+  tabs={[
+    { id: "nestjs", label: "NestJS" },
+    { id: "fastapi", label: "FastAPI" },
+    { id: "nextjs", label: "Next.js" },
+  ]}
+>
+
+<>
+**NestJS** uses TypeORM's `DataSource` migration runner. The migration file lives in
+`src/database/migrations/` and is applied once during deployment. The `up()` / `down()`
+pair makes it reversible — always write both halves.
+
+<ProjectFiles
+  title="nestjs-indexes/ (TypeORM migration)"
+  initialSelected="src/database/migrations/002_add_composite.ts"
+  files={[
+    {
+      path: "src/database/migrations/002_add_composite.ts",
+      label: "002_add_composite.ts",
+      lang: "ts",
+      content: `import { MigrationInterface, QueryRunner } from 'typeorm';
+
+/**
+ * Composite index on (org_id, user_id). The planner uses it when a query
+ * filters on both columns: equality seek on org_id first, then user_id
+ * within that org's rows — no full-org scan.
+ */
+export class AddCompositeIndex implements MigrationInterface {
+  name = 'AddCompositeIndex';
+
+  async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(\`
+      CREATE INDEX events_org_user_idx
+        ON events (org_id, user_id)
+        WHERE org_id IS NOT NULL
+    \`);
+    // ANALYZE so the planner picks up fresh statistics immediately,
+    // without waiting for the next autovacuum cycle.
+    await queryRunner.query('ANALYZE events');
+  }
+
+  async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query('DROP INDEX IF EXISTS events_org_user_idx');
+  }
+}`,
+    },
+  ]}
+/>
+
+The query in the lesson's playground is the exact query the service calls — run it here
+and read which node the planner chose, and whether a `Sort` appears:
+
+<SqlBlock title="NestJS: findAll(orgId, userId) — the exact query the service sends" sql={`EXPLAIN
+  SELECT id, kind, created_at
+  FROM events
+  WHERE org_id = 1 AND user_id = 7
+  ORDER BY created_at DESC
+  LIMIT 20;`} expect="Compare the index it picks against the Sort node: events_org_time_idx serves the ORDER BY; a (org_id, user_id) index would serve both filters but force a Sort. That trade-off is the migration's whole decision." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+</>
+
+<>
+**FastAPI** uses Alembic. The migration lives in `alembic/versions/` and is applied
+at deploy time. `op.create_index()` is equivalent to raw `CREATE INDEX` but is
+recorded in the revision history, making every change auditable and reversible.
+
+<ProjectFiles
+  title="fastapi-indexes/ (Alembic revision)"
+  initialSelected="alembic/versions/002_add_composite.py"
+  files={[
+    {
+      path: "alembic/versions/002_add_composite.py",
+      label: "002_add_composite.py",
+      lang: "py",
+      content: `"""add composite events index
+
+Revision ID: 002
+Revises: 001
+"""
+from alembic import op
+
+revision = '002'
+down_revision = '001'
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    # Composite B-tree: (org_id, user_id). The planner seeks on org_id
+    # first (equality), then steps through user_id within that org's rows.
+    # If you only query user_id without org_id, put user_id first instead.
+    op.create_index(
+        'ix_events_org_user',
+        'events',
+        ['org_id', 'user_id'],
+    )
+    # Covering index: (user_id) INCLUDE (kind) means the planner can answer
+    # 'SELECT kind FROM events WHERE user_id = ?' from the index alone —
+    # no heap fetch, which is the dominant cost on large tables.
+    op.create_index(
+        'ix_events_user_kind',
+        'events',
+        ['user_id'],
+        postgresql_include=['kind'],
+    )
+    op.execute('ANALYZE events')
+
+
+def downgrade() -> None:
+    op.drop_index('ix_events_org_user', table_name='events')
+    op.drop_index('ix_events_user_kind', table_name='events')`,
+    },
+  ]}
+/>
+
+The same migration runs in production — same file, same Alembic, same outcome. And the
+covering read it adds — `SELECT kind` served from the index — is the one to verify by eye:
+
+<SqlBlock title="FastAPI: the covering read the migration adds (kind served from the index)" sql={`EXPLAIN SELECT kind FROM events WHERE user_id = 7;`} expect="Bitmap Heap Scan using events_user_cover_idx — index used, but NOT Index Only Scan: the heap is not all-visible after the lesson's 5,000-row insert, exactly the visibility-map rule from earlier in this lesson." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+</>
+
+<>
+**Next.js** uses Drizzle ORM. Indexes are declared in the schema; `drizzle-kit generate`
+produces the migration SQL and `drizzle-kit migrate` applies it. The schema and the
+migration stay in sync automatically: add a line to the schema, generate, migrate.
+
+<ProjectFiles
+  title="nextjs-indexes/ (Drizzle schema)"
+  initialSelected="db/schema.ts"
+  files={[
+    {
+      path: "db/schema.ts",
+      label: "schema.ts",
+      lang: "ts",
+      content: `import { pgTable, index, sql } from 'drizzle-orm/pg-core';
+import { uuid, integer, text, jsonb, timestamptz } from 'drizzle-orm/pg-core';
+
+export const events = pgTable('events', {
+  id:         uuid('id').primaryKey().defaultRandom(),
+  orgId:      integer('org_id').notNull(),
+  userId:     integer('user_id').notNull(),
+  kind:       text('kind').notNull(),
+  payload:    jsonb('payload').notNull(),
+  createdAt:  timestamptz('created_at').notNull(),
+}, (table) => [
+  // Composite B-tree: seek on org_id, step through user_id within that org.
+  index('events_org_user_idx').on(table.orgId, table.userId),
+  // Covering index: seek on user_id, read kind from the index without a heap hit.
+  index('ix_events_user_kind').on(table.userId).include(sql\`kind\`),
+])`,
+    },
+  ]}
+/>
+
+`drizzle-kit generate` produces `CREATE INDEX events_org_user_idx ON events (org_id, user_id)`
+and `drizzle-kit migrate` runs it. The schema stays the single source of truth. The admin
+dashboard's case-insensitive filter is the one the expression index serves:
+
+<SqlBlock title="Next.js: the admin filter, served by the expression index" sql={`EXPLAIN SELECT count(*) FROM events WHERE lower(kind) = 'purchase';`} expect="Index Scan using events_kind_lower_idx — the index is defined on lower(kind), and the query asks for lower(kind), so the match is exact." assert={[{ rowsAtLeast: 1, columns: ['QUERY PLAN'] }]} />
+</>
+
+</StackTabs>
+
 ## Check yourself
 
 1. A query on `WHERE created_at > …` ignores your `(created_at, org_id)` index when `org_id` is in the `WHERE` list. Why?

@@ -9,6 +9,7 @@ export const ja: Dictionary = {
     learn: '学ぶ',
     playground: 'プレイグラウンド',
     play: 'ラボ',
+    exam: '試験',
     search: 'レッスン・スニペット・テーブルを検索',
     searchAria: '検索を開く',
   },
