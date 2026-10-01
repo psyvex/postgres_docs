@@ -315,6 +315,181 @@ html[data-splash='seen'] #splash {
   animation-direction: reverse;
 }
 
+/* Hero ring dust (HeroUniverse): one slow turn of the speck circle; the SVG parent squashes it into the
+   ring plane, so a plain rotation reads as orbiting. */
+.ring-dust { animation: ring-dust 90s linear infinite; transform-origin: 0 0; }
+@keyframes ring-dust { to { transform: rotate(360deg); } }
+
+/* Home-page lamps (components/home/lamp). Fixture colours are per theme; the light colour is the
+   host's `--lamp-c` (a design token). In light mode the beam is a tint, in dark mode it glows. */
+:root {
+  --lamp-metal: #2a303c;
+  --lamp-metal-2: #3a4152;
+  --lamp-edge: #4a5162;
+  --lamp-rope: #a59b88;
+  --lamp-beam: 16%;
+}
+.dark {
+  --lamp-metal: #20252f;
+  --lamp-metal-2: #2b313d;
+  --lamp-edge: #3a4152;
+  --lamp-rope: #bfb5a2;
+  --lamp-beam: 55%;
+}
+[data-lit] { --lit: 0; }
+.lamp-bulb { fill: var(--lamp-c); opacity: 0.15; transition: opacity 0.25s; }
+.lamp-on .lamp-bulb { opacity: 1; }
+/* The beam is a conic wedge, not a clipped polygon: a clip cuts after the blur, which leaves a hairline
+   along each edge. Here the edges are gradient stops (soft by construction) and a mask fades the length
+   out before the beam reaches the section's edge, where `overflow: hidden` would otherwise cut it flat. */
+.lamp-cone {
+  opacity: 0;
+  transition: opacity 0.35s;
+  background: conic-gradient(
+    from calc(180deg - var(--lamp-a)) at 50% 0,
+    transparent 0deg,
+    color-mix(in srgb, var(--lamp-c) var(--lamp-beam), transparent) calc(var(--lamp-a) * 0.6),
+    color-mix(in srgb, var(--lamp-c) var(--lamp-beam), transparent) calc(var(--lamp-a) * 1.4),
+    transparent calc(var(--lamp-a) * 2),
+    transparent 360deg
+  );
+  mask-image: linear-gradient(to bottom, black, rgb(0 0 0 / 0.35) 55%, transparent 96%);
+}
+.dark .lamp-cone { mix-blend-mode: screen; }
+.lamp-on .lamp-cone { opacity: 1; }
+.lamp-wash {
+  opacity: 0;
+  transition: opacity 0.5s;
+  background: radial-gradient(42% 50% at var(--lamp-hx, 50%) 62%, color-mix(in srgb, var(--lamp-c) 14%, transparent), transparent 70%);
+  /* Same reason as the beam: never let the section's edge be the thing that ends the light. */
+  mask-image: linear-gradient(to bottom, black 55%, transparent 92%), linear-gradient(to left, transparent, black 6%);
+  mask-composite: intersect;
+}
+.lamp-on .lamp-wash { opacity: 1; }
+.lamp-flicker .lamp-cone, .lamp-flicker .lamp-wash, .lamp-flicker .lamp-bulb { animation: lamp-flicker 0.7s steps(1) 1; }
+@keyframes lamp-flicker {
+  0% { opacity: 1; } 12% { opacity: 0.1; } 20% { opacity: 0.9; } 30% { opacity: 0.2; }
+  42% { opacity: 1; } 55% { opacity: 0.5; } 64% { opacity: 1; }
+}
+.lamp-mote {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--lamp-c) 70%, white);
+  opacity: 0;
+  animation: lamp-drift calc(5s + var(--i) * 0.45s) linear infinite;
+  animation-delay: calc(var(--i) * -0.7s);
+}
+@keyframes lamp-drift {
+  0% { transform: translate(0, 0); opacity: 0; }
+  15% { opacity: 0.8; }
+  85% { opacity: 0.5; }
+  100% { transform: translate(calc((var(--i) - 6) * 3px), -60px); opacity: 0; }
+}
+.lamp-knob::after {
+  content: '';
+  width: 11px;
+  height: 17px;
+  border-radius: 5px 5px 7px 7px;
+  background: linear-gradient(#e9e2d4, #9d927f);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 0.45);
+}
+/* Lamp focus scenes (components/home/lamp/LampScenes). They fade in with the light and only run while
+   it is on; reduced motion parks every keyframe on its last frame via the kill-switch below. */
+.lamp-focus { opacity: 0; transition: opacity 0.5s; }
+.lamp-on .lamp-focus { opacity: 1; }
+.lamp-focus * { animation-play-state: paused; }
+.lamp-on .lamp-focus * { animation-play-state: running; }
+/* B-tree split (BTreeSplit), one 7 s story: fall → overflow → split → promote → new edge → lookup. */
+.bt *, .bt { animation-duration: 7s; animation-iteration-count: infinite; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); }
+.bt-key { animation-name: bt-key; }
+@keyframes bt-key {
+  0% { transform: translate(0, 0); opacity: 0; } 5% { opacity: 1; }
+  18%, 30% { transform: translate(0, 148px); opacity: 1; }
+  44% { transform: translate(66px, 46px); opacity: 1; }
+  48%, 100% { transform: translate(66px, 46px); opacity: 0; }
+}
+.bt-leaf { animation-name: bt-leaf; }
+@keyframes bt-leaf {
+  0%, 18% { transform: translateX(0); opacity: 1; }
+  20%, 24% { transform: translateX(-3px); } 22%, 26% { transform: translateX(3px); }
+  28% { transform: translateX(0); opacity: 1; } 34%, 94% { opacity: 0; } 100% { opacity: 1; }
+}
+.bt-leaf rect { animation: bt-full 7s infinite; }
+@keyframes bt-full { 0%, 17% { stroke: var(--line); } 19%, 30% { stroke: var(--bad); } 31%, 100% { stroke: var(--line); } }
+.bt-left { animation-name: bt-left; }
+@keyframes bt-left { 0%, 32% { opacity: 0; transform: translateX(15px); } 40%, 92% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; } }
+.bt-right { animation-name: bt-right; }
+@keyframes bt-right { 0%, 32% { opacity: 0; transform: translateX(-50px); } 40%, 92% { opacity: 1; transform: none; } 98%, 100% { opacity: 0; } }
+/* The root grows from [40] to [25 40] as a crossfade of two boxes: a scaled SVG rect reports its
+   transform but does not reliably repaint it, and the cross-fade reads the same. */
+.bt-root-a { animation-name: bt-root-a; }
+@keyframes bt-root-a { 0%, 42% { opacity: 1; } 48%, 92% { opacity: 0; } 98%, 100% { opacity: 1; } }
+.bt-root-b { animation-name: bt-root-b; }
+@keyframes bt-root-b { 0%, 42% { opacity: 0; } 48%, 92% { opacity: 1; } 98%, 100% { opacity: 0; } }
+.bt-up { animation-name: bt-up; }
+@keyframes bt-up { 0%, 43% { opacity: 0; } 49%, 92% { opacity: 1; } 98%, 100% { opacity: 0; } }
+.bt-edge { stroke-dashoffset: 1; animation-name: bt-edge; }
+@keyframes bt-edge { 0%, 50% { stroke-dashoffset: 1; } 58%, 92% { stroke-dashoffset: 0; } 98%, 100% { stroke-dashoffset: 1; } }
+.bt-probe { animation-name: bt-probe; filter: drop-shadow(0 0 6px var(--lamp-c)); }
+@keyframes bt-probe { 0%, 59% { opacity: 0; transform: translate(-12px, 0); } 62% { opacity: 1; transform: translate(-12px, 0); } 74%, 86% { opacity: 1; transform: translate(-2px, 84px); } 90%, 100% { opacity: 0; transform: translate(-2px, 84px); } }
+.bt-hit { animation-name: bt-hit; }
+@keyframes bt-hit { 0%, 73% { stroke: var(--line); } 76%, 88% { stroke: var(--lamp-c); fill: color-mix(in srgb, var(--lamp-c) 20%, var(--surface)); } 92%, 100% { stroke: var(--line); } }
+.bt-cap-a { animation-name: bt-cap-a; }
+@keyframes bt-cap-a { 0%, 17% { opacity: 0; } 20%, 32% { opacity: 1; } 36%, 100% { opacity: 0; } }
+.bt-cap-b { animation-name: bt-cap-b; }
+@keyframes bt-cap-b { 0%, 62% { opacity: 0; } 66%, 88% { opacity: 1; } 92%, 100% { opacity: 0; } }
+
+/* RLS heist (RlsHeist), 5 s: the query flies, the policy ripples, the query shatters, nothing leaks. */
+.rh-shield { transform-box: fill-box; transform-origin: center; animation: rh-spin 12s linear infinite; }
+@keyframes rh-spin { to { transform: rotate(360deg); } }
+.rh-ripple { transform-box: fill-box; transform-origin: center; opacity: 0; animation: rh-ripple 5s ease-out infinite; }
+@keyframes rh-ripple { 0%, 37% { opacity: 0; transform: scale(1); } 40% { opacity: 0.9; transform: scale(1); } 62%, 100% { opacity: 0; transform: scale(1.4); } }
+.rh-packet { animation: rh-packet 5s cubic-bezier(0.55, 0, 0.9, 0.4) infinite; }
+@keyframes rh-packet { 0% { opacity: 0; transform: translateX(-20px); } 8% { opacity: 1; } 38% { opacity: 1; transform: translateX(64px); } 40%, 100% { opacity: 0; transform: translateX(64px); } }
+.rh-shard { opacity: 0; transform-box: fill-box; transform-origin: center; animation: rh-shard 5s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+@keyframes rh-shard { 0%, 38% { opacity: 0; transform: none; } 40% { opacity: 1; transform: none; } 72% { opacity: 0.9; transform: translate(var(--dx), var(--dy)) rotate(var(--r)); } 78%, 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--r)); } }
+.rh-err { opacity: 0; animation: rh-err 5s steps(1) infinite; }
+@keyframes rh-err {
+  0%, 41% { opacity: 0; } 42% { opacity: 1; transform: translateX(-4px) skewX(-12deg); }
+  44% { transform: translateX(3px); } 46% { opacity: 0.4; transform: translateX(-1px) skewX(8deg); }
+  48%, 84% { opacity: 1; transform: none; } 88%, 100% { opacity: 0; }
+}
+.rh-ok { opacity: 0; animation: rh-ok 5s ease infinite; }
+@keyframes rh-ok { 0%, 60% { opacity: 0; } 66%, 86% { opacity: 1; } 92%, 100% { opacity: 0; } }
+.rh-row { animation: rh-row 5s ease infinite; }
+@keyframes rh-row { 0%, 39% { opacity: 0.85; } 42% { opacity: 0.25; } 52%, 100% { opacity: 0.85; } }
+
+/* WAL streaming (WalStream): segments ride the pipe, the replica fills, the LSN counts in hex. */
+@property --lsn { syntax: '<integer>'; inherits: false; initial-value: 0; }
+@counter-style lsn-hex {
+  system: numeric;
+  symbols: '0' '1' '2' '3' '4' '5' '6' '7' '8' '9' 'A' 'B' 'C' 'D' 'E' 'F';
+  pad: 4 '0';
+}
+.ws-lsn { counter-reset: lsn var(--lsn); animation: ws-lsn 6s linear infinite; }
+.ws-lsn::after { content: counter(lsn, lsn-hex); }
+@keyframes ws-lsn { from { --lsn: 4096; } to { --lsn: 8191; } }
+.ws-flow { animation: ws-flow 0.8s linear infinite; }
+@keyframes ws-flow { to { stroke-dashoffset: -28; } }
+.ws-seg {
+  offset-rotate: auto;
+  background: var(--lamp-c);
+  box-shadow: 0 0 10px var(--lamp-c);
+  animation: ws-seg 2.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes ws-seg { 0% { offset-distance: 0%; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { offset-distance: 100%; opacity: 0; } }
+.ws-fill { transform-box: fill-box; transform-origin: 50% 100%; animation: ws-fill 6s linear infinite; }
+@keyframes ws-fill { 0% { transform: scaleY(0.05); } 95% { transform: scaleY(1); } 100% { transform: scaleY(0.05); } }
+.ws-beat { animation: ws-beat 1.2s ease-in-out infinite; }
+@keyframes ws-beat { 50% { opacity: 0.2; } }
+
+/* What the light does to a card it lands on: border and glow only, the card's design is untouched. */
+.lamp-card {
+  box-shadow: var(--shadow), 0 0 calc(var(--lit) * 36px) calc(var(--lit) * -8px) var(--lamp-c);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

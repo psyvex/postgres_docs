@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { topics } from '@/content/registry';
 import { HeroUniverse } from '@/components/home/HeroUniverse';
+import { WallLamp } from '@/components/home/lamp/WallLamp';
+import { BTreeSplit, RlsHeist, WalStream } from '@/components/home/lamp/LampScenes';
 import { HeroBackdrop } from '@/components/home/HeroBackdrop';
 import { HeroSketches } from '@/components/home/HeroSketches';
 import { KeywordMarquee } from '@/components/home/sections/KeywordMarquee';
@@ -61,12 +63,15 @@ export default function Home() {
         <ProgressStats totalLessons={ready.length} totalChecks={totalCheckable()} />
       </section>
 
-      <section className="py-16">
+      {/* Each section has its own wall lamp in its own colour (brand, bad, accent), on the right wall because
+          that is the empty side: every heading is left-aligned. Desktop only: on a phone the wall is the text's margin. */}
+      <section id="lessons" className="relative isolate -mx-4 scroll-mt-14 overflow-hidden px-4 py-16 sm:-mx-8 sm:px-8 lg:pt-40 xl:-mx-12 xl:px-12" style={{ '--lamp-c': 'var(--brand)' } as React.CSSProperties}>
+        <WallLamp wall="right" top={40} shade="cone" alpha={0.3} label="Pull cord: switch the lessons lamp" className="hidden lg:block" focus={<BTreeSplit />} />
         <SectionHeading eyebrow="The lessons" title={<>Security &amp; automation, <span className="text-brand">one story.</span></>} copy="Each lesson builds on the same tiny multi-tenant app, so every concept lands on data you already know." />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
           {ready.map((t, i) => (
             <Reveal key={t.slug} index={i}>
-              <Link href={`/learn/${t.slug}`} className="group flex h-full flex-col rounded-3xl border border-line bg-surface p-5 shadow-card transition hover:-translate-y-1 hover:border-brand">
+              <Link href={`/learn/${t.slug}`} data-lit className="lamp-card group flex h-full flex-col rounded-3xl border border-line bg-surface p-5 shadow-card transition hover:-translate-y-1 hover:border-brand">
                 <div className="flex items-center justify-between">
                   <span className="grid h-12 w-12 place-items-center rounded-2xl bg-brand-soft text-brand transition group-hover:scale-110 group-hover:bg-brand group-hover:text-on-brand"><Icon name={t.icon} size={28} /></span>
                   <span className="font-mono text-xs text-muted">0{i + 1}</span>
@@ -84,12 +89,13 @@ export default function Home() {
       </section>
 
       {break_.length > 0 && (
-        <section className="py-16">
+        <section id="labs" className="relative isolate -mx-4 scroll-mt-14 overflow-hidden px-4 py-16 sm:-mx-8 sm:px-8 lg:pt-40 xl:-mx-12 xl:px-12" style={{ '--lamp-c': 'var(--bad)' } as React.CSSProperties}>
+          <WallLamp wall="right" top={40} shade="dome" alpha={0.32} label="Pull cord: switch the labs lamp" className="hidden lg:block" focus={<RlsHeist />} />
           <SectionHeading eyebrow="Break-it labs" title={<>Turn the lesson <span className="text-warn">against itself.</span></>} copy="You are the attacker, not the learner. Your job: break the guard the lesson just built. Every challenge is a graded assertion, and the answer card tells you what went wrong." />
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
             {break_.map((t, i) => (
               <Reveal key={t.slug} index={i}>
-                <Link href={`/learn/${t.slug}`} className="group flex h-full flex-col rounded-3xl border border-warn/30 bg-surface p-5 shadow-card transition hover:-translate-y-1 hover:border-warn">
+                <Link href={`/learn/${t.slug}`} data-lit className="lamp-card group flex h-full flex-col rounded-3xl border border-warn/30 bg-surface p-5 shadow-card transition hover:-translate-y-1 hover:border-warn">
                   <div className="flex items-center justify-between">
                     <span className="grid h-12 w-12 place-items-center rounded-2xl" style={{ background: 'color-mix(in srgb, var(--warn) 15%, transparent)', color: 'var(--warn)' }}><Icon name={t.icon} size={28} /></span>
                     <span className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase" style={{ background: 'color-mix(in srgb, var(--warn) 15%, transparent)', color: 'var(--warn)' }}>Break it</span>
@@ -111,12 +117,13 @@ export default function Home() {
       <TwoModes />
       <AiDemo />
 
-      <section className="py-16">
+      <section id="roadmap" className="relative isolate -mx-4 scroll-mt-14 overflow-hidden px-4 py-16 sm:-mx-8 sm:px-8 lg:pt-40 xl:-mx-12 xl:px-12" style={{ '--lamp-c': 'var(--accent)' } as React.CSSProperties}>
+        <WallLamp wall="right" top={40} shade="dome" alpha={0.32} label="Pull cord: switch the roadmap lamp" className="hidden lg:block" focus={<WalStream />} />
         <SectionHeading eyebrow="Roadmap" title={<>Growing into a <span className="text-brand">full Postgres handbook.</span></>} copy="The same format, more of the database. Planned topics light up as they ship." />
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
           {planned.map((t, i) => (
             <Reveal key={t.slug} index={i}>
-              <div className="h-full rounded-2xl border border-dashed border-line bg-surface/40 p-4 text-sm transition hover:border-brand/50">
+              <div data-lit className="lamp-card h-full rounded-2xl border border-dashed border-line bg-surface/40 p-4 text-sm transition hover:border-brand/50">
                 <div className="flex items-center gap-2 font-semibold"><Icon name={t.icon} size={18} className="text-muted" /> {t.title}</div>
                 <div className="mt-1 text-xs text-muted">{t.tagline}</div>
                 <div className="mt-3 w-fit rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-muted">coming soon</div>

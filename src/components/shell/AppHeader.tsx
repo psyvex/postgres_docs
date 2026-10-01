@@ -37,10 +37,21 @@ const NAV: {
   { href: '/exam', match: '/exam', tKey: 'exam', tShortKey: 'exam' },
 ];
 
+// The home page is the marketing page: its header points at the page's own sections, plus the one app
+// destination a visitor can try without reading anything. `wide` items drop out below `sm`, so the 320 px
+// row carries two links and no database chip, which is less than the app header already fits.
+const MARKETING: { href: string; tKey: 'lessons' | 'labs' | 'roadmap' | 'playground'; wide?: boolean }[] = [
+  { href: '#lessons', tKey: 'lessons' },
+  { href: '#labs', tKey: 'labs', wide: true },
+  { href: '#roadmap', tKey: 'roadmap', wide: true },
+  { href: '/playground', tKey: 'playground' },
+];
+
 export function AppHeader() {
   const pathname = usePathname();
   const { t } = useT();
   const [replay, setReplay] = useState(0);
+  const marketing = pathname === '/';
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur">
       <div className="flex h-14 w-full items-center gap-2 px-3 sm:gap-6 sm:px-4">
@@ -49,7 +60,26 @@ export function AppHeader() {
           <span className="hidden sm:inline">Postgres Lab</span>
         </Link>
         <nav className="ms-auto flex items-center gap-1">
-          {NAV.map((item) => (
+          {marketing && MARKETING.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={clsx(
+                'rounded-lg px-2 py-1.5 text-[13px] font-semibold text-muted transition hover:bg-surface-2 hover:text-text sm:px-3 sm:text-sm',
+                item.wide && 'hidden sm:inline',
+              )}
+            >
+              {item.tKey === 'playground' ? (
+                <>
+                  <span className="hidden sm:inline">{t.header.playground}</span>
+                  <span className="sm:hidden">{t.header.play}</span>
+                </>
+              ) : (
+                t.header[item.tKey]
+              )}
+            </Link>
+          ))}
+          {!marketing && NAV.map((item) => (
             <Link
               key={item.href}
               href={item.href}
@@ -77,7 +107,8 @@ export function AppHeader() {
             <Search className="h-3.5 w-3.5" />
             <kbd className="hidden font-mono text-[10px] sm:inline">⌘K</kbd>
           </button>
-          <DbModeSwitch />
+          {/* Local vs live database means nothing to a first-time visitor; it is app chrome, not marketing. */}
+          {!marketing && <DbModeSwitch />}
           <ThemeToggle />
         </div>
       </div>

@@ -18,6 +18,10 @@ export const en = {
     /** Below `sm`, where the row competes with the database chip (T5-6). */
     play: 'Play',
     exam: 'Exam',
+    /** Home page only: the header points at the landing page's own sections. */
+    lessons: 'Lessons',
+    labs: 'Labs',
+    roadmap: 'Roadmap',
     search: 'Search lessons, snippets and tables',
     searchAria: 'Open search',
   },
