@@ -13,6 +13,7 @@ const loaders: Record<string, () => Promise<{ default: MDXContent }>> = {
   'partitioning': () => import('./topics/partitioning.mdx'),
   'backup-replication': () => import('./topics/backup-replication.mdx'),
   jsonb: () => import('./topics/jsonb.mdx'),
+  'nestjs-rls': () => import('./topics/nestjs-rls.mdx'),
 };
 
 /** Every lesson that `generateStaticParams` will emit must have a key here, or the page builds as a 404. */

@@ -49,7 +49,7 @@ export function TableBrowser({ table }: { table: TableInfo }) {
         <span className={clsx('rounded px-1.5 py-0.5 text-[10px] font-bold', table.rlsEnabled ? 'bg-good-soft text-good' : 'bg-surface-2 text-muted')}>
           {table.rlsEnabled ? `RLS ${table.rlsForced ? 'forced' : 'on'}` : 'RLS off'}
         </span>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
+        <div className="ms-auto flex flex-wrap items-center gap-2">
           {tab === 'data' && (
             <PersonaSelect value={persona} onChange={setPersona} prefix="View as" />
           )}
@@ -57,7 +57,7 @@ export function TableBrowser({ table }: { table: TableInfo }) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-3">
+      <div dir="ltr" className="min-h-0 flex-1 overflow-auto p-3">
         {tab === 'data' && (loading && !data ? <BrandLoader size={44} label="Loading rows…" className="py-10" /> : data && <ResultView result={data.result} skip={data.skip} />)}
 
         {tab === 'structure' && (

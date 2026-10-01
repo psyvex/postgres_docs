@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState, type ComponentType } from 'react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useMotionPresets } from '@/lib/motion';
 import clsx from 'clsx';
 import { Loader2, RotateCcw, X } from 'lucide-react';
 import { streamAi, stripFence, useAiEnabled } from '@/lib/ai/client';
@@ -17,7 +18,7 @@ type Props = {
   /** Content hash of the lesson source; cached translations are invalidated when the lesson changes. */
   version: string;
   sourceLength: number;
-  /** Lesson meta chips (track, minutes, version) — the language picker joins this row. */
+  /** Lesson meta chips (track, minutes, version); the language picker joins this row. */
   meta?: React.ReactNode;
   /** The original, server-rendered lesson. */
   children: React.ReactNode;
@@ -39,10 +40,13 @@ async function compileMdx(source: string) {
 /**
  * Lesson language switcher (research repo pattern: curated languages, stream + cache).
  * The lesson MDX is translated by the AI with JSX components and SQL kept verbatim, then compiled
- * here — so animations and runnable examples keep working in the translated lesson.
+ * here, so animations and runnable examples keep working in the translated lesson.
  */
 export function LessonTranslator({ slug, version, sourceLength, meta, children }: Props) {
   const aiEnabled = useAiEnabled();
+  // A translation that arrives fully typeset replaces a whole lesson in one frame; the swap is what
+  // turns that jump into a hand-over. The progress bar keeps its own width animation.
+  const { swap: article, popover: banner } = useMotionPresets();
   const [state, setState] = useState<State>({ kind: 'original' });
   const abort = useRef<AbortController | null>(null);
 
@@ -120,8 +124,9 @@ export function LessonTranslator({ slug, version, sourceLength, meta, children }
         </div>
       )}
 
-      {state.kind === 'streaming' && (
-        <div className="not-prose mb-6 rounded-2xl border border-accent/30 bg-accent-soft/40 p-4">
+      <AnimatePresence>
+        {state.kind === 'streaming' && (
+          <motion.div key="translating" {...banner} className="not-prose mb-6 rounded-2xl border border-accent/30 bg-accent-soft/40 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-accent">
             <Loader2 className="h-4 w-4 animate-spin" /> Translating to {current?.label}… {Math.round(progress * 100)}%
             <button onClick={showOriginal} className="ml-auto flex items-center gap-1 text-xs text-muted hover:text-text">
@@ -133,24 +138,29 @@ export function LessonTranslator({ slug, version, sourceLength, meta, children }
           </div>
           <p className="mt-3 line-clamp-2 font-mono text-[11px] text-muted" dir={isRtl(state.lang) ? 'rtl' : undefined}>{state.tail}</p>
           <p className="mt-1 text-[11px] text-muted">The original lesson stays below until the translation is ready. Next time it loads instantly from this browser.</p>
-        </div>
-      )}
+          </motion.div>
+        )}
 
-      {state.kind === 'error' && (
-        <div className="not-prose mb-6 rounded-2xl border border-bad/30 bg-bad-soft p-4 text-sm text-bad">
+        {state.kind === 'error' && (
+          <motion.div key="translation-failed" {...banner} className="not-prose mb-6 rounded-2xl border border-bad/30 bg-bad-soft p-4 text-sm text-bad">
           Translation failed: {state.message}
           <button onClick={() => translate(state.lang, true)} className="ml-3 font-semibold underline">Try again</button>
-          <button onClick={showOriginal} className="ml-3 font-semibold underline">Show original</button>
-        </div>
-      )}
+            <button onClick={showOriginal} className="ml-3 font-semibold underline">Show original</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {state.kind === 'ready' ? (
-        <article className={clsx('prose-lab', isRtl(state.lang) && '[&_.not-prose]:[direction:ltr]')} dir={isRtl(state.lang) ? 'rtl' : undefined} lang={state.lang}>
-          <state.Content />
-        </article>
-      ) : (
-        <article className="prose-lab">{children}</article>
-      )}
+      {/* `mode="wait"` so the original is gone before the translation is laid out: two whole lessons
+          in flow at once would push the page height around under the reader. */}
+      <AnimatePresence mode="wait" initial={false}>
+        {state.kind === 'ready' ? (
+          <motion.article key={`translated-${state.lang}`} {...article} className={clsx('prose-lab', isRtl(state.lang) && '[&_.not-prose]:[direction:ltr]')} dir={isRtl(state.lang) ? 'rtl' : undefined} lang={state.lang}>
+            <state.Content />
+          </motion.article>
+        ) : (
+          <motion.article key="original" {...article} dir="ltr" style={{ textAlign: 'left' }} className="prose-lab">{children}</motion.article>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

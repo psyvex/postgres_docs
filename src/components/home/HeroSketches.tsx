@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 
 /**
- * Ephemeral "notebook" sketches that draw themselves across the hero, hold, then fade —
+ * Ephemeral "notebook" sketches that draw themselves across the hero, hold, then fade,
  * inspired by the portfolio's PatternCanvas (notes, code, graphs, routes), with Postgres content.
  * Sketches only spawn in empty space: any element marked `data-sketch-avoid` is kept clear.
  */

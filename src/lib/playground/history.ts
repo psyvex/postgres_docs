@@ -2,8 +2,8 @@
  * Query history for the playground editor.
  *
  * Schema stored in localStorage as `{ items: string[]; pinned: string[] }`:
- *   items  — most-recent-first, deduplicated, capped at MAX_ITEMS
- *   pinned — survives a clear; a query is pinned by its exact trimmed text
+ *   items  : most-recent-first, deduplicated, capped at MAX_ITEMS
+ *   pinned : survives a clear; a query is pinned by its exact trimmed text
  *
  * Pure module: no React, no DOM. Safe to unit-test in Node.
  */
@@ -33,7 +33,7 @@ function write(s: Schema): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
   } catch {
-    // localStorage full or unavailable — silently drop.
+    // localStorage full or unavailable: silently drop.
   }
 }
 

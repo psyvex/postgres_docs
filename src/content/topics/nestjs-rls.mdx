@@ -1,0 +1,509 @@
+<ProjectFiles
+  title="nestjs-rls/"
+  initialSelected="src/db/database.module.ts"
+  files={[
+    {
+      path: "src/db/database.module.ts",
+      label: "database.module.ts",
+      lang: "ts",
+      content: `import { Module, Global } from '@nestjs/common';
+import { DataSource } from 'typeorm';
+
+@Global()
+@Module({
+  providers: [
+    {
+      provide: DataSource,
+      useFactory: async () => {
+        const dataSource = new DataSource({
+          type: 'postgres',
+          host: process.env.PGHOST,
+          port: Number(process.env.PGPORT ?? 5432),
+          // RLS depends on this being a LOW-PRIVILEGE role ('nest_app'),
+          // not the superuser that owns the schema. The superuser runs
+          // migrations; the app only gets DML rights.
+          username: process.env.PGUSER,
+          password: process.env.PGPASSWORD,
+          database: process.env.PGDATABASE,
+          entities: [__dirname + '/../../**/*.entity{.ts,.js}'],
+          migrations: [__dirname + '/migrations/*{.ts,.js}'],
+          synchronize: false,       // never in production
+          logging: process.env.NODE_ENV === 'development',
+        });
+        return dataSource.initialize();
+      },
+    },
+  ],
+  exports: [DataSource],
+})
+export class DatabaseModule {}`
+    },
+    {
+      path: "src/auth/auth.service.ts",
+      label: "auth.service.ts",
+      lang: "ts",
+      content: `import { Injectable, Scope, Inject } from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
+import { DataSource } from 'typeorm';
+
+/**
+ * Per-request identity for Row-Level Security.
+ *
+ * NestJS destroys this provider at the end of every request,
+ * so the Postgres session — and its RLS context — evaporates
+ * automatically. No manual cleanup needed.
+ *
+ * For connection-pooled deployments (PgBouncer in transaction mode),
+ * this works without changes: each request borrows a connection,
+ * sets the RLS context, runs queries, and returns the connection.
+ * The next request starts with a clean slate.
+ */
+@Injectable({ scope: Scope.REQUEST })
+export class AuthService {
+  private memberId: number | null = null;
+  private orgId: number | null = null;
+
+  constructor(@Inject(REQUEST) private readonly request: Request) {
+    // In a real app: extract the verified JWT here.
+    // Never trust client-supplied identity — always validate server-side.
+    const token = (this.request.headers as Headers)
+      .get('authorization')?.replace('Bearer ', '');
+    if (token) {
+      const payload = this.verifyJwt(token);       // your JWT library
+      this.memberId = payload.memberId;
+      this.orgId     = payload.orgId;
+    }
+  }
+
+  getMemberId() { return this.memberId; }
+  getOrgId()     { return this.orgId; }
+
+  isAuthenticated() { return this.memberId !== null; }
+
+  private verifyJwt(token: string) {
+    // Replace with: import { verify } from 'jsonwebtoken';
+    // return verify(token, process.env.JWT_SECRET!) as JwtPayload;
+    throw new Error('Implement JWT verification before use');
+  }
+}`
+    },
+    {
+      path: "src/auth/rls.interceptor.ts",
+      label: "rls.interceptor.ts",
+      lang: "ts",
+      content: `import {
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+} from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { AuthService } from './auth.service';
+
+/**
+ * Interceptor that sets the Postgres RLS session variables before every
+ * request handler runs, using the verified identity from AuthService.
+ *
+ * Runs BEFORE the controller method. NestJS guarantees that the same
+ * DataSource instance is reused for the duration of the request, so
+ * every query sees the same RLS context.
+ */
+@Injectable()
+export class RlsInterceptor implements NestInterceptor {
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly auth: AuthService,   // per-request instance
+  ) {}
+
+  async intercept(ctx: ExecutionContext, next: CallHandler) {
+    const orgId     = this.auth.getOrgId();
+    const memberId  = this.auth.getMemberId();
+
+    if (orgId !== null && memberId !== null) {
+      // set_config(...) is transaction-local: the setting disappears
+      // at COMMIT, preventing a forgotten setting from leaking across
+      // requests. The third argument 'true' is what makes it local.
+      await this.dataSource.query(\`
+        SELECT set_config('app.org_id', $1, true),
+               set_config('app.member_id', $2, true)
+      \`, [String(orgId), String(memberId)]);
+    }
+
+    return next.handle();
+  }
+}`
+    },
+    {
+      path: "src/tasks/tasks.service.ts",
+      label: "tasks.service.ts",
+      lang: "ts",
+      content: `import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Task } from './task.entity';
+
+@Injectable()
+export class TasksService {
+  constructor(
+    @InjectRepository(Task) private readonly repo: Repository<Task>,
+  ) {}
+
+  /**
+   * Returns only the rows the current user may see — enforced by RLS.
+   * No WHERE org_id = ... needed. The Postgres session already knows
+   * the org context from RlsInterceptor.
+   */
+  findAll() {
+    return this.repo.find({ order: { id: 'ASC' } });
+  }
+
+  async findOne(id: number) {
+    const task = await this.repo.findOne({ where: { id } });
+    if (!task) throw new Error('Not found');
+    return task;
+  }
+
+  create(data: Partial<Task>) {
+    return this.repo.save(this.repo.create(data));
+  }
+
+  async update(id: number, data: Partial<Task>) {
+    await this.repo.update(id, data);
+    return this.findOne(id);
+  }
+
+  async remove(id: number) {
+    await this.repo.delete(id);
+  }
+}`
+    },
+    {
+      path: "src/tasks/task.entity.ts",
+      label: "task.entity.ts",
+      lang: "ts",
+      content: `import {
+  Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn,
+} from 'typeorm';
+
+@Entity('tasks')
+export class Task {
+  @PrimaryGeneratedColumn()
+  id: number;
+
+  @Column()
+  title: string;
+
+  @Column({ name: 'org_id' })
+  orgId: number;
+
+  @Column({ name: 'assignee_id', nullable: true })
+  assigneeId: number | null;
+
+  @Column({ default: 'open' })
+  status: string;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+}`
+    },
+    {
+      path: "src/tasks/tasks.controller.ts",
+      label: "tasks.controller.ts",
+      lang: "ts",
+      content: `import {
+  Controller, Get, Post, Patch, Delete,
+  Param, Body, UseGuards, ParseIntPipe,
+} from '@nestjs/common';
+import { TasksService } from './tasks.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+
+@Controller('tasks')
+@UseGuards(JwtAuthGuard)     // reject unauthenticated requests before RLS fires
+export class TasksController {
+  constructor(private readonly tasks: TasksService) {}
+
+  @Get()
+  findAll() { return this.tasks.findAll(); }
+
+  @Get(':id')
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.tasks.findOne(id);
+  }
+
+  @Post()
+  create(@Body() body: { title: string; assigneeId?: number }) {
+    return this.tasks.create(body);
+  }
+
+  @Patch(':id')
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: Partial<{ title: string; status: string; assigneeId: number }>,
+  ) {
+    return this.tasks.update(id, body);
+  }
+
+  @Delete(':id')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.tasks.remove(id);
+  }
+}`
+    },
+    {
+      path: "src/app.module.ts",
+      label: "app.module.ts",
+      lang: "ts",
+      content: `import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { DatabaseModule } from './db/database.module';
+import { AuthService } from './auth/auth.service';
+import { RlsInterceptor } from './auth/rls.interceptor';
+import { TasksModule } from './tasks/tasks.module';
+
+@Module({
+  imports: [DatabaseModule, TasksModule],
+  providers: [
+    AuthService,
+    // Registers the interceptor globally — every route benefits from RLS.
+    { provide: APP_INTERCEPTOR, useClass: RlsInterceptor },
+  ],
+})
+export class AppModule {}`
+    },
+    {
+      path: "migrations/001_create_schema.sql",
+      label: "001_create_schema.sql",
+      lang: "sql",
+      content: `-- Run this once as the superuser (not as the app role).
+-- It creates the full schema and the RLS policy layer.
+
+-- 1. Application roles ---------------------------------------------------------
+-- The app role is what your NestJS app connects as.
+-- It does NOT own any tables — that role is reserved for migrations.
+CREATE ROLE nest_app NOLOGIN;
+GRANT CONNECT ON DATABASE app_db TO nest_app;
+GRANT USAGE ON SCHEMA public TO nest_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nest_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO nest_app;
+
+-- 2. Tables --------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS organizations (
+  id    SERIAL PRIMARY KEY,
+  name  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS members (
+  id         SERIAL PRIMARY KEY,
+  org_id     INTEGER NOT NULL REFERENCES organizations(id),
+  name       TEXT    NOT NULL,
+  email      TEXT    NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id          SERIAL PRIMARY KEY,
+  org_id      INTEGER NOT NULL REFERENCES organizations(id),
+  assignee_id INTEGER REFERENCES members(id),
+  title       TEXT    NOT NULL,
+  status      TEXT    NOT NULL DEFAULT 'open',
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- 3. RLS policies --------------------------------------------------------------
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+
+-- Each policy restricts visibility and mutation to rows in the session's org.
+CREATE POLICY tenant_read ON tasks
+  FOR SELECT USING (org_id = NULLIF(current_setting('app.org_id', true), '')::INTEGER);
+
+CREATE POLICY tenant_insert ON tasks
+  FOR INSERT WITH CHECK (org_id = NULLIF(current_setting('app.org_id', true), '')::INTEGER);
+
+CREATE POLICY tenant_update ON tasks
+  FOR UPDATE USING (org_id = NULLIF(current_setting('app.org_id', true), '')::INTEGER)
+              WITH CHECK (org_id = NULLIF(current_setting('app.org_id', true), '')::INTEGER);
+
+CREATE POLICY tenant_delete ON tasks
+  FOR DELETE USING (org_id = NULLIF(current_setting('app.org_id', true), '')::INTEGER);
+
+-- Force RLS even for the table owner (superuser) during normal app use.
+-- Superusers bypass RLS by default; this makes that explicit.
+ALTER TABLE tasks FORCE ROW LEVEL SECURITY;
+
+-- 4. Seed data ----------------------------------------------------------------
+INSERT INTO organizations (id, name) VALUES (1, 'Acme Corp'), (2, 'Globex GmbH') ON CONFLICT DO NOTHING;
+INSERT INTO members (id, org_id, name, email) VALUES
+  (1, 1, 'Alice', 'alice@acme.example'),
+  (2, 1, 'Bob',   'bob@acme.example'),
+  (3, 2, 'Carol', 'carol@globex.example');
+INSERT INTO tasks (org_id, assignee_id, title, status) VALUES
+  (1, 1, 'Define API contract', 'done'),
+  (1, 1, 'Write unit tests', 'open'),
+  (1, 2, 'Deploy staging', 'open'),
+  (1, NULL, 'Review security audit', 'open'),
+  (2, 3, 'Migrate legacy data', 'open');`
+    },
+    {
+      path: ".env.example",
+      label: ".env.example",
+      lang: "yaml",
+      content: `# Postgres connection (as the 'nest_app' role, NOT postgres superuser)
+PGHOST=localhost
+PGPORT=5432
+PGDATABASE=app_db
+PGUSER=nest_app
+PGPASSWORD=change_me
+
+# JWT (replace with your own secret)
+JWT_SECRET=replace_with_a_real_secret
+
+NODE_ENV=development`
+    },
+  ]}
+/>
+
+## How it fits together
+
+Every request to `/tasks/*` hits three layers in sequence:
+
+1. **JwtAuthGuard** — rejects unauthenticated requests before they touch the database. RLS is not an authentication mechanism; it assumes you already know *who* the user is.
+2. **RlsInterceptor** — runs before the controller. Calls `set_config('app.org_id', $1, true)` and `set_config('app.member_id', $2, true)` on the pooled connection. The `true` argument makes the setting transaction-local: it vanishes at `COMMIT`.
+3. **Controller + Service** — queries run with `SELECT * FROM tasks` and Postgres automatically filters to `WHERE org_id = $session_org_id`.
+
+Because NestJS injects `AuthService` with `Scope.REQUEST` into `RlsInterceptor`, each request gets its own `AuthService` instance tied to its own JWT payload. The Postgres session variables are set on *that* request's connection and nobody else's.
+
+---
+
+## The SQL behind it
+
+The lab's database already holds the same three tables your NestJS app would own —
+`organizations`, `members`, `tasks` — plus the `app_member` role and the
+`current_org_id()` helper. What it does *not* do is create the policies: that is
+your app's migration, exactly the `001_create_schema.sql` file above. Run these in
+order to watch the interceptor's contract take effect.
+
+**Step 1 — attach the policies.** As the table owner (Superuser), once:
+
+<SqlBlock title="One-time DDL: enable RLS + four tenant policies" sql={`ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_select ON tasks;
+DROP POLICY IF EXISTS tenant_insert ON tasks;
+DROP POLICY IF EXISTS tenant_update ON tasks;
+DROP POLICY IF EXISTS tenant_delete ON tasks;
+
+CREATE POLICY tenant_select ON tasks
+  FOR SELECT TO app_member
+  USING (org_id = current_org_id());
+
+CREATE POLICY tenant_insert ON tasks
+  FOR INSERT TO app_member
+  WITH CHECK (org_id = current_org_id());
+
+CREATE POLICY tenant_update ON tasks
+  FOR UPDATE TO app_member
+  USING (org_id = current_org_id())
+  WITH CHECK (org_id = current_org_id());
+
+CREATE POLICY tenant_delete ON tasks
+  FOR DELETE TO app_member
+  USING (org_id = current_org_id());`} expect="RLS on, four policies owned by the superuser — the app role can neither add nor drop them." />
+
+**Step 2 — the app queries with no WHERE clause.** These blocks run as the
+personas, so each one is exactly one HTTP request through
+`RlsInterceptor` → controller → `repo.find()`:
+
+<SqlBlock title="Alice's request — plain SELECT, no filter" as="alice" sql={`SELECT t.id, t.title, o.name AS org
+FROM tasks t
+JOIN organizations o ON o.id = t.org_id
+ORDER BY t.id;`} expect="4 rows, all Acme Rockets. Carol's Globex tasks are invisible." assert={[{rows: 4}]} />
+
+<SqlBlock title="Bob's request — same query, same org, same answer" as="bob" sql={`SELECT t.id, t.title, o.name AS org
+FROM tasks t
+JOIN organizations o ON o.id = t.org_id
+ORDER BY t.id;`} expect="4 rows. Bob and Alice share org 1, so identical visibility — with no shared code path." assert={[{rows: 4}]} />
+
+<SqlBlock title="Carol's request — different JWT, different rows" as="carol" sql={`SELECT t.id, t.title, o.name AS org
+FROM tasks t
+JOIN organizations o ON o.id = t.org_id
+ORDER BY t.id;`} expect="3 rows, all Globex Labs. Same SQL, different session context." assert={[{rows: 3}]} />
+
+**Step 3 — a bug in the app can no longer leak data.** Suppose a junior dev
+forgets to scope an insert, or a compromised client sends the wrong org:
+
+<SqlBlock title="Alice's request tries to write into Carol's org" as="alice" sql={`INSERT INTO tasks (org_id, project_id, title, status)
+  VALUES (2, 3, 'Trying to spy on Globex', 'todo')
+  RETURNING id, title, org_id;`} expect="ERROR: new row violates row-level security policy — WITH CHECK rejects the write." assert={[{error: 'row-level security'}]} />
+
+The `org_id = 2` in that statement came from the *request body*, which the policy
+never trusts. `WITH CHECK` compares the new row against `current_org_id()` —
+which only the interceptor, reading a verified JWT, is allowed to set.
+
+---
+
+## Two rules you must never break
+
+<Callout type="warn" title="Rule 1 — never let the app connect as superuser">
+
+Your NestJS app must connect as a *dedicated application role* (`nest_app`), not as `postgres`. The superuser bypasses RLS, which defeats the entire point. Create the app role with only `GRANT SELECT, INSERT, UPDATE, DELETE` on tables — no `SUPERUSER`, no `CREATEROLE`, no `BYPASSRLS`.
+
+```sql
+CREATE ROLE nest_app NOLOGIN;
+GRANT CONNECT ON DATABASE app_db TO nest_app;
+GRANT USAGE, SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nest_app;
+```
+
+</Callout>
+
+<Callout type="danger" title="Rule 2 — set identity server-side, never from the client">
+
+The `set_config` call in `RlsInterceptor` reads from a *verified* JWT payload. Never derive the org_id from a request header the client can set:
+
+```typescript
+// WRONG — client controls the header
+const orgId = request.headers['x-org-id'];
+
+// RIGHT — identity comes from the verified token
+const orgId = this.verifyJwt(token).orgId;
+```
+
+An attacker who controls the RLS context can read any tenant's rows.
+
+</Callout>
+
+---
+
+## What the interceptor looks like without NestJS
+
+If you are not using NestJS, the same pattern works in any framework. The principle is identical:
+
+```typescript
+// Express example (same idea, no DI container)
+app.use(async (req, res, next) => {
+  if (req.user) {
+    await pool.query(
+      `SELECT set_config('app.org_id', $1, true), set_config('app.member_id', $2, true)`,
+      [String(req.user.orgId), String(req.user.memberId)],
+    );
+  }
+  next();
+});
+```
+
+With PgBouncer in **transaction mode** this works without changes: each request borrows a connection, sets the RLS context, runs queries, and returns the connection. The setting is cleaned up automatically when PgBouncer resets the connection for the next transaction.
+
+---
+
+## Recap
+
+| Piece | What it does |
+|---|---|
+| `Scope.REQUEST` `AuthService` | Holds verified identity for this request only |
+| `RlsInterceptor` | Sets `app.org_id` and `app.member_id` on the Postgres session |
+| `set_config(..., true)` | Transaction-local — vanishes at COMMIT |
+| `FORCE ROW LEVEL SECURITY` | RLS applies even to the table owner |
+| `JwtAuthGuard` | Stops unauthenticated requests *before* RLS context is set |
+| `nest_app` role | App connects with least privilege; does not own tables |

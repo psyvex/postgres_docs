@@ -100,7 +100,7 @@ export function PlanTree({ plan }: Props) {
   const rootTime = root['Actual Total Time'];
 
   return (
-    <div className="overflow-auto rounded-xl border border-line bg-surface text-[13px]">
+    <div dir="ltr" className="overflow-auto rounded-xl border border-line bg-surface text-[13px]">
       <div className="border-b border-line bg-surface-2 px-3 py-1.5 text-[11px] font-semibold text-muted">
         <span>plan · {rows.length} node{rows.length === 1 ? '' : 's'}</span>
         <span className="ml-3 font-mono">cost=0..{rootCost.toFixed(2)}</span>

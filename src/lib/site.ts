@@ -12,7 +12,19 @@ export const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL ?? 'https://postgres-l
 export const SITE_NAME = 'Postgres Lab';
 
 export const SITE_DESCRIPTION =
-  'Learn PostgreSQL security hands-on: RLS, roles, functions, triggers — with a real Postgres running in your browser.';
+  'Learn PostgreSQL security hands-on: RLS, roles, functions, triggers, with a real Postgres running in your browser.';
 
 /** Absolute URL for a path on this site. */
 export const siteUrl = (path = '/') => new URL(path, `${SITE_URL}/`).toString();
+
+/**
+ * The two colours an installed app is painted with, copied from the `:root` tokens in
+ * `globals.css` (`--bg` and `--brand`, light theme). A web app manifest is JSON handed to the
+ * operating system, so it cannot read a CSS custom property and has to carry the literal; they live
+ * here rather than inline in `manifest.ts` so the pairing with the token is written down in one
+ * place. Light-theme values are the right choice for both: `background_color` is the splash screen
+ * behind the icon, which appears before any stylesheet, and a dark splash with a light first paint
+ * flashes.
+ */
+export const APP_BG = '#fbf8f3';
+export const APP_BRAND = '#336791';

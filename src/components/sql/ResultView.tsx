@@ -64,10 +64,10 @@ export function ResultView({ result, skip = 0, onAskAi, compact }: Props) {
 
 export function ResultTable({ result, compact }: { result: StatementResult; compact?: boolean }) {
   if (result.rows.length === 0) {
-    return <div className="rounded-xl border border-dashed border-line px-3 py-4 text-center text-sm text-muted">0 rows — {result.columns.join(', ')}</div>;
+    return <div className="rounded-xl border border-dashed border-line px-3 py-4 text-center text-sm text-muted">0 rows. Columns: {result.columns.join(', ')}</div>;
   }
   return (
-    <div className={clsx('overflow-auto rounded-xl border border-line bg-surface', compact ? 'max-h-72' : 'max-h-[60vh]')}>
+    <div dir="ltr" className={clsx('overflow-auto rounded-xl border border-line bg-surface', compact ? 'max-h-72' : 'max-h-[60vh]')}>
       <table className="w-full border-collapse text-left text-[13px]">
         <thead className="sticky top-0 bg-surface-2">
           <tr>

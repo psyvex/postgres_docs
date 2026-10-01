@@ -3,7 +3,7 @@
  *
  * Plain localStorage JSON, following the file's own conventions: guarded for SSR (nothing here
  * touches `window` at module scope, so a server render sees an empty progress and the client fills
- * it in — the same "render uncounted first" rule the cache controls use), written with an
+ * it in, the same "render uncounted first" rule the cache controls use), written with an
  * unversioned key, tolerant of a corrupt payload, and broadcast on the `storage` event so a second
  * tab agrees.
  *

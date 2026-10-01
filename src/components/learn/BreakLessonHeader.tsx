@@ -4,7 +4,7 @@
  * Lesson header for break-it labs: a challenge badge (n/m solved) overlaid on the normal
  * progress bar, so the learner sees both the lesson progress and how many challenges they've cracked.
  *
- * The challenge count uses the same `assert=` blocks as the lesson — one `assert` = one
+ * The challenge count uses the same `assert=` blocks as the lesson: one `assert` = one
  * challenge. Passing it solves both the challenge and the lesson check simultaneously.
  */
 import { useProgress } from '@/lib/learn/progress';

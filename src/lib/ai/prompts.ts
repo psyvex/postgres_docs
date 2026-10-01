@@ -6,9 +6,11 @@ Rules:
 - Target PostgreSQL 18 syntax and behaviour. When a feature is version-specific, say which version introduced it.
 - Prefer secure patterns: least privilege, SECURITY INVOKER by default, SET search_path on SECURITY DEFINER functions, parameterized SQL.
 - The demo schema is \`lab\` (search_path = lab, public). App identity comes from current_member_id() / current_org_id(), which read the settings app.member_id / app.org_id. Roles: app_member, app_admin, app_anon.
-- Be concise and concrete. Use short markdown with fenced sql blocks. Link to https://www.postgresql.org/docs/current/ pages when useful.`;
+- Be concise and concrete. Use short markdown with fenced sql blocks. Link to https://www.postgresql.org/docs/current/ pages when useful.
+- Punctuation in prose: never use "--" or "—" as a dash. Join the clauses with a comma, a colon, a semicolon, parentheses, or a full stop and a new sentence. Double hyphens are legal only inside SQL (a "-- comment" line, or code in a fenced sql block) and must not appear anywhere else in your answer. Do not emit a "---" horizontal rule to separate sections; a heading is enough.`;
 
-export const TRANSLATOR_SYSTEM = `You are a professional technical translator for developer documentation. You translate faithfully and never add commentary.`;
+export const TRANSLATOR_SYSTEM = `You are a professional technical translator for developer documentation. You translate faithfully and never add commentary.
+Punctuation: never output "--" as a dash, and do not carry an em dash (—) over from the source. Render each such break with punctuation natural to the target language: a comma, a colon, a semicolon, brackets, or a sentence break. Inside code, SQL and inline code every character stays verbatim, dashes included.`;
 
 /** Lesson source is MDX: prose plus JSX components whose props carry SQL. Only the prose may change. */
 export const translateInstructions = (language: string) =>
@@ -25,9 +27,33 @@ export const translateInstructions = (language: string) =>
 export const translateTextInstructions = (language: string) =>
   `Translate this passage from a PostgreSQL lesson into ${language}. Keep SQL, inline code, identifiers and product names in English. Return only the translation.`;
 
+
+/**
+ * Tasks whose answer is prose a learner reads. `complete` (ghost text at the cursor) and `write`
+ * (SQL only, applied to the editor) are excluded on purpose: their output is code, and asking for
+ * Hindi there produces a Hindi comment header instead of SQL.
+ */
+export const ANSWER_LANGUAGE_TASKS = new Set(['explain', 'fix', 'ask', 'review', 'explainPlan', 'simplify']);
+
+const ANSWER_LANGUAGE_SUFFIX =
+  'Answer in {{language}}, written in the script that language normally uses (Hindi to Devanagari, Arabic and Urdu to the Arabic script, Japanese to kana plus kanji). ' +
+  'Keep all SQL, code fences, table, column and role names, and product names (PostgreSQL, RLS) in English. ' +
+  'Keep the severity tags High, Medium, Low and OK in English.';
+
+/**
+ * The one place the assistant's answer language is applied. It rides on the *user* prompt, never on
+ * the system prompt, because the system block is sent with `cache_control: ephemeral` and has to stay
+ * byte-identical for every language to keep its cache hit. Naming the *script* matters: a bare
+ * "Answer in Hindi" comes back romanized ("RLS ek mechanism hai"), which a Devanagari reader cannot skim.
+ */
+export function withAnswerLanguage(content: string, task: string, language: string | null): string {
+  if (!language || language === 'English' || !ANSWER_LANGUAGE_TASKS.has(task)) return content;
+  return `${content}\n\n${ANSWER_LANGUAGE_SUFFIX.replace('{{language}}', language)}`;
+}
+
 export const TASK_PROMPTS = {
   complete: (b: { sql?: string }) =>
-    `Continue this SQL from the cursor marker ⟨CURSOR⟩. Reply with ONLY the text to insert at the cursor — no explanation, no code fences, no repetition of existing text. Keep it to one statement or less.\n\n${b.sql}`,
+    `Continue this SQL from the cursor marker ⟨CURSOR⟩. Reply with ONLY the text to insert at the cursor. No explanation, no code fences, no repetition of existing text. Keep it to one statement or less.\n\n${b.sql}`,
   explain: (b: { sql?: string }) =>
     `Explain what this SQL does, step by step, as you would to a developer in a live workshop. Point out any security implications (RLS, privileges, SECURITY DEFINER, triggers).\n\n\`\`\`sql\n${b.sql}\n\`\`\``,
   fix: (b: { sql?: string; error?: string }) =>

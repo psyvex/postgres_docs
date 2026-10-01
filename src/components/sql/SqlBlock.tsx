@@ -72,7 +72,7 @@ export function SqlBlock({ sql: initial, title, as, pickPersona, expect, assert,
   const playgroundHref = `/playground?sql=${encodeURIComponent(sql)}${persona !== 'owner' ? `&as=${persona}` : ''}`;
 
   return (
-    <figure className="not-prose my-6 rounded-2xl border border-line bg-surface shadow-card [&>*:last-child]:rounded-b-2xl">
+    <figure dir="ltr" className="not-prose my-6 rounded-2xl border border-line bg-surface shadow-card [&>*:last-child]:rounded-b-2xl">
       <div className="flex flex-wrap items-center gap-2 rounded-t-2xl border-b border-line bg-surface-2 px-3 py-2">
         <span className="rounded-md bg-brand-soft px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-brand">{lang}</span>
         {title && <figcaption className="text-sm font-semibold">{title}</figcaption>}
@@ -121,7 +121,7 @@ export function SqlBlock({ sql: initial, title, as, pickPersona, expect, assert,
           {/* The hint that describes what the block promises, shown before the learner has run it. */}
           {expect && !run && <div className="flex items-center gap-1.5 text-xs text-muted"><Icon name="target" className="text-accent" /> {expect}</div>}
 
-          {/* A check verdict — shown above the table so the pass/fail is seen first. */}
+          {/* A check verdict: shown above the table so the pass/fail is seen first. */}
           {assert && run && grade && (
             grade.passed ? (
               <div className="flex items-center gap-1.5 rounded-xl border border-good/30 bg-good-soft px-3 py-2 text-sm font-semibold text-good">

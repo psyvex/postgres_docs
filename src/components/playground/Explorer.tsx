@@ -20,7 +20,7 @@ export function Explorer({ schema, error, selected, onSelectTable, onInsert }: P
   const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   return (
-    <div className="h-full overflow-y-auto p-3 text-sm">
+    <div dir="ltr" className="h-full overflow-y-auto p-3 text-sm">
       {error && <div className="mb-2 rounded-lg bg-bad-soft p-2 text-xs text-bad">{error}</div>}
       {!schema && !error && <BrandLoader size={36} label="Loading catalog…" className="py-8 text-xs" />}
 
@@ -39,7 +39,7 @@ export function Explorer({ schema, error, selected, onSelectTable, onInsert }: P
                     className={clsx('flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left font-mono text-xs', selected === q ? 'bg-brand text-on-brand' : 'hover:bg-surface-2')}
                   >
                     <span className="truncate">{t.name}</span>
-                    <span className="ml-auto flex items-center gap-1">
+                    <span className="ms-auto flex items-center gap-1">
                       {t.rlsEnabled && <Shield className={clsx('h-3 w-3', selected === q ? 'text-on-brand' : 'text-good')} aria-label="RLS enabled" />}
                       {t.triggers.length > 0 && <Zap className={clsx('h-3 w-3', selected === q ? 'text-on-brand' : 'text-accent')} aria-label="Has triggers" />}
                     </span>
@@ -57,7 +57,7 @@ export function Explorer({ schema, error, selected, onSelectTable, onInsert }: P
               <li key={`${f.schema}.${f.name}(${f.args})`}>
                 <button onClick={() => onInsert(`${f.name}()`)} title={`${f.kind} ${f.name}(${f.args}) → ${f.returns}`} className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left font-mono text-xs hover:bg-surface-2">
                   <span className="truncate">{f.name}</span>
-                  {f.security === 'definer' && <span className="ml-auto rounded bg-warn-soft px-1 text-[9px] font-bold text-warn">DEFINER</span>}
+                  {f.security === 'definer' && <span className="ms-auto rounded bg-warn-soft px-1 text-[9px] font-bold text-warn">DEFINER</span>}
                 </button>
               </li>
             ))}
@@ -67,8 +67,8 @@ export function Explorer({ schema, error, selected, onSelectTable, onInsert }: P
               <li key={r.name} className="flex items-center gap-1.5 px-2 py-1 font-mono text-xs">
                 {r.login ? <KeyRound className="h-3 w-3 text-brand" /> : <span className="h-3 w-3" />}
                 <span className="truncate">{r.name}</span>
-                {r.superuser && <span className="ml-auto rounded bg-bad-soft px-1 text-[9px] font-bold text-bad">SUPER</span>}
-                {!r.superuser && r.bypassRls && <span className="ml-auto rounded bg-warn-soft px-1 text-[9px] font-bold text-warn">BYPASS</span>}
+                {r.superuser && <span className="ms-auto rounded bg-bad-soft px-1 text-[9px] font-bold text-bad">SUPER</span>}
+                {!r.superuser && r.bypassRls && <span className="ms-auto rounded bg-warn-soft px-1 text-[9px] font-bold text-warn">BYPASS</span>}
               </li>
             ))}
           </Group>

@@ -4,7 +4,7 @@ import { siteUrl } from '@/lib/site';
 
 /**
  * Generated from the lesson registry, so a lesson cannot be published without
- * appearing here — the `status` field is the only gate. Planned lessons stay
+ * appearing here, the `status` field is the only gate. Planned lessons stay
  * out of the index until they have content.
  */
 export default function sitemap(): MetadataRoute.Sitemap {

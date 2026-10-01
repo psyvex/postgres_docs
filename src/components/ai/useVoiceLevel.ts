@@ -11,7 +11,7 @@ type AudioCtor = typeof AudioContext;
  *
  * Meters ONLY a stream the caller already owns, and never opens one of its own. Asking for the
  * microphone a second time while the Web Speech API is already capturing it is how you get a lit
- * mic indicator, a red button and no transcript — on macOS Chrome that contention is real. So the
+ * mic indicator, a red button and no transcript, on macOS Chrome that contention is real. So the
  * browser-speech path passes no stream and keeps its decorative bars: a visual is not worth
  * competing with the component that produces the words. The server path already holds the stream
  * MediaRecorder is recording, so it meters for free.

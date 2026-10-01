@@ -1,7 +1,7 @@
 import type { RunResult } from '@/lib/db/types';
 
 /**
- * Declarations for `check.mjs` — see the note there for why the implementation is JavaScript.
+ * Declarations for `check.mjs`, see the note there for why the implementation is JavaScript.
  * Keep this file and `check.mjs` in step; the verifier imports the `.mjs` directly.
  */
 export type Check = {
@@ -21,7 +21,7 @@ export type Check = {
 
 export type Grade = { passed: boolean; failures: string[] };
 
-/** Authoring mistakes — a typo'd key is an empty check, which passes for everybody. */
+/** Authoring mistakes, a typo'd key is an empty check, which passes for everybody. */
 export declare function checkProblems(checks: unknown): string[];
 
 /** Grade a run against a block's checks. `skip` drops the session-setup statements, as `ResultView` does. */

@@ -12,7 +12,7 @@ type ConceptProps = { size?: number };
 
 const loop = (duration: number, extra: Transition = {}): Transition => ({ duration, repeat: Infinity, ease: 'easeInOut', ...extra });
 
-/* 1 · Draw & Fill — outlines draw, halves fill, elephant badge stamps in. Best as intro/splash. */
+/* 1 · Draw & Fill, outlines draw, halves fill, elephant badge stamps in. Best as intro/splash. */
 export function DrawFill({ size = 160 }: ConceptProps) {
   const t = loop(4, { times: [0, 0.35, 0.55, 0.85, 1] });
   return (
@@ -37,7 +37,7 @@ export function DrawFill({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 2 · Tide — the two halves breathe like waves; elephant floats on the navy sea. Best as loader. */
+/* 2 · Tide, the two halves breathe like waves; elephant floats on the navy sea. Best as loader. */
 export function Tide({ size = 160 }: ConceptProps) {
   return (
     <svg width={size} height={size} viewBox={WL_VIEWBOX} overflow="visible">
@@ -52,7 +52,7 @@ export function Tide({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 3 · Open Vault — the mark splits open and the elephant rises out of it. Loader or reveal. */
+/* 3 · Open Vault, the mark splits open and the elephant rises out of it. Loader or reveal. */
 export function OpenVault({ size = 160 }: ConceptProps) {
   const t = loop(3, { times: [0, 0.3, 0.7, 1] });
   return (
@@ -67,7 +67,7 @@ export function OpenVault({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 4 · Orbit — the elephant circles the Webelight world like a satellite. Loader. */
+/* 4 · Orbit, the elephant circles the Webelight world like a satellite. Loader. */
 export function Orbit({ size = 160 }: ConceptProps) {
   const badge = size * 0.28;
   return (
@@ -85,7 +85,7 @@ export function Orbit({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 5 · Coin Flip — one coin, two faces. Loader, social avatar. */
+/* 5 · Coin Flip, one coin, two faces. Loader, social avatar. */
 export function CoinFlip({ size = 160 }: ConceptProps) {
   const face = 'absolute inset-0 grid place-items-center rounded-full [backface-visibility:hidden]';
   return (
@@ -102,7 +102,7 @@ export function CoinFlip({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 6 · Merge — both marks roll in and lock together with a "×". Intro / lockup for slides. */
+/* 6 · Merge, both marks roll in and lock together with a "×". Intro / lockup for slides. */
 export function Merge({ size = 160 }: ConceptProps) {
   const s = size * 0.46;
   const t = loop(3.6, { times: [0, 0.3, 0.8, 1] });
@@ -121,7 +121,7 @@ export function Merge({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 7 · Pulse — "live connection": sonar rings ripple out of the mark. Loader, connection status. */
+/* 7 · Pulse, "live connection": sonar rings ripple out of the mark. Loader, connection status. */
 export function Pulse({ size = 160 }: ConceptProps) {
   return (
     <div className="relative grid place-items-center" style={{ width: size, height: size }}>
@@ -143,7 +143,7 @@ export function Pulse({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 8 · Data Drop — rows fall into the wave and the database "swallows" them. Loader for queries. */
+/* 8 · Data Drop, rows fall into the wave and the database "swallows" them. Loader for queries. */
 export function DataDrop({ size = 160 }: ConceptProps) {
   return (
     <svg width={size} height={size} viewBox="-6 -40 96 128" overflow="visible">
@@ -168,7 +168,7 @@ export function DataDrop({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 9 · Light Trace — "we-be-light": a beam of light runs along the wave. Hero/branding, subtle loader. */
+/* 9 · Light Trace, "we-be-light": a beam of light runs along the wave. Hero/branding, subtle loader. */
 export function LightTrace({ size = 160 }: ConceptProps) {
   return (
     <svg width={size} height={size} viewBox={WL_VIEWBOX} overflow="visible">
@@ -203,7 +203,7 @@ export function LightTrace({ size = 160 }: ConceptProps) {
   );
 }
 
-/* 10 · DB Stack — the mark becomes the lid of a database cylinder that stacks itself. Loader. */
+/* 10 · DB Stack, the mark becomes the lid of a database cylinder that stacks itself. Loader. */
 export function DbStack({ size = 160 }: ConceptProps) {
   const disc = (i: number) => ({ y: [-60, 0, 0, 0, -60], opacity: [0, 1, 1, 1, 0] , transition: loop(3.2, { times: [0, 0.18 + i * 0.1, 0.5, 0.85, 1] }) });
   return (

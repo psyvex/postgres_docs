@@ -15,7 +15,8 @@ src/
     load.ts                   slug → MDX import map
     topics/*.mdx              Lessons
   components/
-    animations/               One interactive explainer per concept (RlsBouncer, PrivilegeGrid, …)
+    animations/               One interactive explainer per concept (RlsBouncer, PrivilegeGrid, …),
+                              plus ProjectFiles (file tree + code viewer for integration lessons)
     sql/                      SqlBlock (runnable snippet), ResultView
     playground/               Explorer, SqlEditor (Monaco), TableBrowser, Playground
     learn/ shell/ docs/ ai/ home/
@@ -95,7 +96,23 @@ Voice input (`VoiceButton`) posts audio to `/api/ai/transcribe` when transcripti
 
 **Streaming contract** (`streamAi`): every text delta replaces the accumulated response, so a reconnect never duplicates; a gateway error is folded into the stream as `**Error:** …`; in the browser an `AbortController` lets one abort (closing the copilot no longer does — the cache owns the stream). The route returns plain text (`text/plain`), not NDJSON.
 
+**Answer language** (`withAnswerLanguage()` in `src/lib/ai/prompts.ts`, `localStorage['postgres-lab:lang']`): the same curated-language list that drives lesson translation also governs the prose answers (`ask`, `explain`, `fix`, `review`, `explainPlan`, `simplify`). One key is shared by the lesson translator, the lesson copilot and the playground assistant, so a reader who picks Hindi once is reading Hindi everywhere; `keys.ts` describes it in `/settings`. Two constraints shape where the instruction goes. It is **never** added to the system prompt: that block is sent with `cache_control: 'ephemeral'` and must stay byte-identical across languages or every language switch pays a cache miss, so the sentence is appended to the *user* prompt instead, after the task template. And it names the **script**, not just the language ("written in the script that language normally uses"), because a bare `Answer in Hindi` returns romanised Hindi in Latin letters, which a Devanagari reader cannot skim; code fences and SQL identifiers stay in English by the same sentence. `complete` and `write` are excluded on purpose: their output is code, and a language line there produces a Hindi comment header in the learner's editor. The playground reads the key in a `requestAnimationFrame`, because a mount that reads during render can catch the translator's write half-done.
+
+**Punctuation the model is told about** (`SYSTEM_PROMPT`, `TRANSLATOR_SYSTEM`): answers use no em dash and no `--` as punctuation, joining clauses with a comma, colon, semicolon, brackets or a new sentence, and no `---` rule between sections. The exception is spelled out because it is the whole difficulty: `--` is the SQL comment token, so it remains legal inside SQL, inline code and fenced blocks. Translated lessons must not carry an em dash over from the source into a language that does not use one. `TRANSLATOR_SYSTEM` is a cached, shared block, so this line changes every future translation and no past one. The same convention holds for the app's own chrome strings and code comments; lesson MDX prose and the docs corpus are authored prose and keep their own rhythm.
+
 Native `claude-*` ids get the beta Messages call with refusal fallbacks (`fallbacks: "default"`), `effort` (low for completions, medium otherwise) and a cached system prompt. Gateway aliases such as `coder` get a plain `messages.stream` with only `model`, `max_tokens`, `system` and `messages`, because they may reject Anthropic-only fields (the research repo also marks `coder` as ignoring structured output). The client sends the live schema description as context. Monaco ghost-text completions are opt-in (toggle in the playground) and debounced to 650 ms.
+
+## Motion
+
+`src/lib/motion.ts` is the only motion vocabulary: `pageIn`, `dialog.backdrop` / `dialog.panel`, `popover(offset)`, `sheet`, `swap`, `tabSwap`, `fade`, `listItem(i)`, `STILL`, and one hook, `useMotionPresets()`. Components import the hook, never a duration or an easing curve. Three rules learned by measurement, all of them silent failures if broken.
+
+**Presets are props, not factories.** `useMotionPresets()` resolves each preset and hands back spreadable objects, including for the parameterised ones: `popover` is already `popover()` and `listItem(i)` is a call, not a value. The first version of the hook returned factories, so `{...menu}` spread a function. React accepts that without a warning and renders no animation whatsoever; five menus shipped with their entrance quietly gone until computed styles were sampled frame by frame. The parameterised forms are therefore named as what they are (`popoverFrom(offset)`, `listItemIn(i)`), and the returned object is documented as finished props at the definition site.
+
+**Page-level transitions are opacity-only.** `src/app/template.tsx` re-mounts the page tree on every navigation, so it is the natural place to fade a page in, and it fades *only* opacity. A `transform` on that ancestor becomes the containing block for every `position: fixed` element beneath it, so the copilot launcher, the toast layer and the palette scrim would be positioned against the page instead of the viewport for the length of the transition. Worse, motion leaves `transform: translateY(0px)` on the settled node rather than clearing it, so the damage outlives the animation. The check that catches the class: after a navigation, read the fixed launcher's `getBoundingClientRect()` against `innerWidth`/`innerHeight`, and read `getComputedStyle()` on every ancestor between it and `<body>`.
+
+**`prefers-reduced-motion` is answered in JS.** A media query in `globals.css` can neutralise class-driven animation but cannot reach the inline `transform`/`opacity` that motion writes, so every call site asks `useReducedMotion()`. The hook returns `still: boolean` plus the resolved presets, already swapped for `STILL`, so a call site that forgets the flag still degrades correctly; `still` is only needed directly where a component keeps its own spring (`LessonAssistant`, `VoiceButton`) or skips a layout animation (`OnThisPage`'s scroll-spy marker).
+
+`AnimatePresence mode="wait"` serialises exit and enter, so a swap costs the two durations *added*: 0.14 s per half measured 298 ms for one bottom-panel tab change, which reads as the app loading something. `tabSwap` is 0.11 s per half (196 ms measured). Long lists that re-render on every keystroke (`ExportMenu`'s format rows) animate their container only, and anything that animates the same element's `height` is a layout jump in disguise: `fade` exists for regions whose height snaps anyway.
 
 ## Playground
 
@@ -113,6 +130,14 @@ The `main` cell carries `grid-cols-[minmax(0,1fr)] min-w-0`, and that is not dec
 
 The cards are `ImageResponse` from `next/og` (1200×630, prerendered at build: one `○ /opengraph-image` for the utility routes, one `● …/opengraph-image` per ready lesson). Three constraints shaped them. **Satori needs explicit `display: flex` on any node with more than one child**, and JSX counts the text either side of an expression as separate children — `{SITE_NAME} / learn / {slug}` fails the build, a single template literal does not. **`textTransform: 'uppercase'` with `letterSpacing` swallows spaces** unless `whiteSpace: 'pre'` is set. And satori renders in a sandbox with no stylesheet, so **CSS variables do not exist there** — the cards' palette is a literal copy of the dark tokens in `globals.css`, annotated as such; changing a token means looking at both.
 
+## Lessons
+
+A lesson is a file in `content/topics/`, one registry row, and one import in `load.ts` — and `scripts/verify-lessons.mjs` runs every `SqlBlock` in every lesson on PGlite in CI, so a lesson's prose promise is a test assertion rather than a claim.
+
+There are now two shapes. A **concept lesson** (`row-level-security`, `jsonb`, …) teaches a Postgres feature and its examples are all SQL. An **integration lesson** (`Integrations` track) teaches the same feature from the application side, and needs two elements: `<ProjectFiles>` for the TypeScript/Python that surrounds the query, and `<SqlBlock>` for the query itself. `ProjectFiles` takes a flat `files={[{path,label,lang,content}]}` array **written inside the MDX**, deliberately: lesson code stays next to the lesson, does not enter the app's module graph, and cannot be imported by mistake. Its tree colour comes from `lang`, its labels from the real filename, and it opens every folder holding `initialSelected` so the lesson's chosen file is on screen at load.
+
+Two rules that the browser taught, not the type checker: a syntax colourer must tokenise in **one pass**, because a chain of `replace()` calls re-scans the markup it just injected and `class` is one of its own keywords, and an app code sample must not claim the lab's database is in a state the seed never puts it in (`seed.ts` ships roles and `current_org_id()` but no policies, so an integration lesson opens with the DDL its own migration file shows).
+
 ## Tooling and tests
 
 **The production build runs on webpack, not Turbopack** — `"build": "next build --webpack"`. Not a preference: Turbopack's minifier breaks PGlite, and the app's core feature dies with it. A Turbopack build serves every page fine and fails only in the browser, at DB boot: `m.instantiateWasm is not a function`, with all wasm/`.data` assets fetching 200s. The name survives minification, so it is not property mangling of that key — the Emscripten module object the factory receives simply no longer carries the hook. Same code, same machine: `next build` (Turbopack) → playground shows nothing; `next build --webpack` → results table renders, 0 page errors. Dev is unaffected (`next dev` runs the unminified bundle, which is why this hid for so long). If a future Next makes the bundler switch cheap, prefer the option that keeps PGlite's Emscripten glue intact, and re-run this check by opening `/playground` on a **production** build and pressing Run.
@@ -124,6 +149,24 @@ The cards are `ImageResponse` from `next/og` (1200×630, prerendered at build: o
 `pnpm test` runs vitest (config `vitest.config.mts`): 88 tests in 7 files (`lib/ai/quota.test.ts`, `lib/sql/session.test.ts`, `lib/ai/languages.test.ts`, `lib/db/guard.test.ts`, `lib/learn/check.test.ts`, `components/shell/CommandPalette.test.ts`, `content/registry.test.ts`) — all pure modules, so no browser, no database, no API key. Two platform facts shape the config: it has to be `.mts` (as `.ts` it is loaded as CommonJS and dies on `ERR_REQUIRE_ESM` importing vite), and it aliases `server-only` to `src/test/server-only-stub.ts`, because the real package throws on import — correct inside a bundle, fatal in a node test of a server module. `.github/workflows/ci.yml` runs install → `verify:lessons` → `typecheck` → `lint` → `test`, offline, concurrency-cancelled.
 
 TypeScript 7 ships **no JS API**, so typescript-eslint 8.71 refuses to load (`does not support TS 7.0`), and `@typescript/native` — named in the TS 7 announcement — is not published. The working arrangement: `typescript` is aliased to `npm:@typescript/typescript6@6.0.2` so tooling gets the 6.0 API (it satisfies typescript-eslint's `>=4.8.4 <6.1.0` peer), and the TS 7 compiler stays available as the devDependency `typescript-cli` (`npm:typescript@^7.0.2`) whose `tsc` binary is what `pnpm typecheck` runs. Consequence for the next person: any tool that imports `typescript` sees 6.0; `tsc` is 7. Lint is `eslint .` on a flat config (`eslint.config.mjs`) that spreads `eslint-config-next/core-web-vitals`, because Next 16 deleted `next lint`; `react-hooks/refs` and `react-hooks/set-state-in-effect` are demoted to warn, since the Monaco/voice bridges keep the latest props in a ref and 25 panels fetch on tab/persona/table change — the documented shape until data moves to server components.
+
+## Progressive web app
+
+The service worker lives in `public/sw.js`, hand-written and served as-is from `public/`, so it is never processed by Next's bundler. `src/lib/pwa/offline.ts` reads the byte cost of CacheStorage for `/settings`, and `src/lib/pwa/offline.test.ts` tests the routing policy against the **real worker bytes** — it reads `public/sw.js` and evaluates it in a stubbed worker scope, so `decide()` under test is the exact function the browser runs, not a copy that can silently diverge.
+
+The cache strategy is named by what the URL **is**, not by an allowlist:
+
+| Cache | Strategy | What it holds |
+|---|---|---|
+| `pglab-static-v1` | cache-first | `/_next/static/*` (content-hashed, so any hit is the right version) and same-origin requests with no query string |
+| `pglab-pages-v1` | network-first | HTML documents and RSC payload fetches (`?_rsc=`); falls back to the cached tree, then to `/offline` |
+| `pglab-monaco-v1` | cache-first | `cdn.jsdelivr.net` (Monaco's AMD loader fetches its own chunks — nothing in the URL identifies them as ours except the policy) |
+
+Everything else is `passthrough`, **including all of `/api/`**: `api/db` executes SQL and `api/ai` spends a rate-limited quota; a cached response to either would be a wrong answer served as a correct one, so neither may be replayed. Install precaches `/offline` and `/icon.svg` (the offline page cannot be fetched in order to be cached, and the icon is fetched before the worker controls the page that fetches it). Activate drops every `pglab-*` cache whose version suffix is not current, so the copy self-heals across deploys.
+
+`ServiceWorkerRegister` registers in production and **unregisters in development**: `next dev` and `next start` share `:3000`, so a worker left from a production proof would intercept a dev reload and serve stale hashed chunks — an edit would look like it did nothing. `/sw.js` is served with `Cache-Control: no-store` from `next.config.ts`; without it Chrome's 24 h heuristic means an update takes two visits.
+
+The installable manifest uses `icons/[name]/route.tsx`, an `ImageResponse` that draws the exact same mark as `app/icon.svg` (the same path constants), prerendered for the three manifest names at build time. The maskable icon scales the mark to 0.56 so it stays inside the 60 % safe zone; its background colour is `APP_BG`, shared with `manifest.ts`'s `background_color`, so the launch splash matches the icon.
 
 ## Styling
 

@@ -29,7 +29,7 @@ export const LANGUAGES = [
 
 export type LanguageCode = (typeof LANGUAGES)[number]['code'];
 
-/** Accepts the 21 translation targets plus `en` — translating *into* English is a real request
+/** Accepts the 21 translation targets plus `en`: translating *into* English is a real request
  *  (e.g. selecting a passage in a translated lesson). */
 export function languageLabel(code: string | undefined) {
   if (code === 'en') return 'English';

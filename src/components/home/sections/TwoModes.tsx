@@ -11,11 +11,11 @@ type Mode = 'browser' | 'live';
 
 const COPY: Record<Mode, { title: string; points: string[] }> = {
   browser: {
-    title: 'Browser — PGlite',
+    title: 'Browser: PGlite',
     points: ['PostgreSQL 18 compiled to WebAssembly', 'Saved on this device (IndexedDB)', 'No server, no install, works offline', 'Reset to demo data in one click'],
   },
   live: {
-    title: 'Live — your local Postgres',
+    title: 'Live: your local Postgres',
     points: ['Connects to localhost only (safe by default)', 'Load the demo schema with one click', 'Every example and animation runs against it', 'Password stays in memory, never stored'],
   },
 };
@@ -40,7 +40,7 @@ export function TwoModes() {
 
   return (
     <section className="py-16">
-      <SectionHeading eyebrow="Two databases, one lab" title={<>Real Postgres, <span className="text-brand">wherever you are.</span></>} copy="Start instantly in the browser, or point the lab at your own server — every lesson works the same." />
+      <SectionHeading eyebrow="Two databases, one lab" title={<>Real Postgres, <span className="text-brand">wherever you are.</span></>} copy="Start instantly in the browser, or point the lab at your own server. Every lesson works the same." />
       <Reveal>
         <div className="grid items-stretch gap-6 overflow-hidden rounded-3xl border border-line bg-surface/70 p-4 shadow-card backdrop-blur sm:p-6 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
           <div className="flex flex-col">

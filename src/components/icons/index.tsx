@@ -53,7 +53,7 @@ import {
   PiWrenchDuotone,
   PiXCircleDuotone,
 } from 'react-icons/pi';
-import { BurstIcon, SkullIcon, TenantHopIcon } from './custom';
+import { BurstIcon, CodeTreeIcon, SkullIcon, TenantHopIcon } from './custom';
 
 export { ElephantBouncer } from './custom';
 
@@ -77,6 +77,8 @@ export const ICONS = {
   jsonb: PiBracketsCurlyDuotone,
   partitioning: PiStackDuotone,
   backups: PiLifebuoyDuotone,
+  // integrations
+  codeTree: CodeTreeIcon as IconType,
   // personas
   // A crown, deliberately: the sparkle this used is the same glyph as `sparkle` below, so the
   // superuser row in "Run as…" read as an AI feature. `owner` keeps the plain crown; this one has

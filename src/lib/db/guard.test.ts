@@ -5,7 +5,7 @@ const conn = (host: string) => ({ host, port: 5432, database: 'lab', user: 'post
 const ok = (host = 'localhost') => ({ connection: conn(host), sql: 'SELECT 1' });
 const TOKEN = 'a-secret-from-env';
 
-describe('validateRequest — where the database may be', () => {
+describe('validateRequest: where the database may be', () => {
   it('allows a local database with no token', () => {
     for (const host of LOCAL_HOSTS) {
       expect(validateRequest(ok(host), {}, null)).toMatchObject({ ok: true });
@@ -22,7 +22,7 @@ describe('validateRequest — where the database may be', () => {
     if (!r.ok) expect(r.error).toContain('ALLOW_REMOTE_DB=true');
   });
 
-  it('refuses remote hosts when remote is open but no token is configured — fail closed', () => {
+  it('refuses remote hosts when remote is open but no token is configured, failing closed', () => {
     const r = validateRequest(ok('db.internal'), { allowRemoteDb: 'true' }, null);
     expect(r).toMatchObject({ ok: false, status: 403 });
     if (!r.ok) expect(r.error).toContain('DB_QUERY_TOKEN');
@@ -50,7 +50,7 @@ describe('validateRequest — where the database may be', () => {
   });
 });
 
-describe('validateRequest — the request itself', () => {
+describe('validateRequest: the request itself', () => {
   it('requires host, database and user', () => {
     for (const patch of [{ host: '' }, { database: '' }, { user: '' }]) {
       expect(validateRequest({ connection: { ...conn('localhost'), ...patch }, sql: 'SELECT 1' }, {}, null)).toMatchObject({ ok: false, status: 400 });

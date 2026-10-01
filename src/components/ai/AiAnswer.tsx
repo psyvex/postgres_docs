@@ -39,7 +39,7 @@ export function AiAnswer({ task, payload, onClose, title, onApplySql }: Props) {
         {!done && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
 
         {/* Toolbar: grouped right, separated by a border */}
-        <span className="ml-auto flex items-center gap-1 rounded-lg border border-accent/20 bg-accent/5 p-0.5">
+        <span className="ms-auto flex items-center gap-1 rounded-lg border border-accent/20 bg-accent/5 p-0.5">
           {/* Token badge: shown when the model reported usage. */}
           {done && usage && (
             <span
@@ -64,9 +64,9 @@ export function AiAnswer({ task, payload, onClose, title, onApplySql }: Props) {
               <Minus className="h-3 w-3" />
             </ToolbarButton>
 
-            {/* Current size — click to reset to auto */}
+            {/* Current size; click to reset to auto */}
             <ToolbarButton
-              title={font.custom ? `${Math.round(font.px)}px — click to reset to auto` : 'Auto size — click to customise'}
+              title={font.custom ? `${Math.round(font.px)}px, click to reset to auto` : 'Auto size: click to customise'}
               onClick={font.custom ? font.reset : undefined}
               className="min-w-[2rem] justify-center font-mono text-[11px] font-semibold leading-none"
             >
@@ -111,7 +111,7 @@ export function AiAnswer({ task, payload, onClose, title, onApplySql }: Props) {
         </div>
       )}
 
-      {/* Apply / Apply & Run — playground only, shown when the answer contains a SQL block. */}
+      {/* Apply / Apply & Run, playground only, shown when the answer contains a SQL block. */}
       {onApplySql && sqlBlock && (
         <div className="mt-3 flex gap-2 border-t border-accent/20 pt-3">
           <button

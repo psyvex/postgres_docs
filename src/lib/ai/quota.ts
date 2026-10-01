@@ -9,14 +9,14 @@ import type { AiTask } from './client';
  * other half: a **count of requests** per client IP, in two sliding windows so there is no
  * midnight boundary to game.
  *
- *   AI_REQUESTS_PER_HOUR     requests in the last hour        (default 60) — stops grinding
- *   AI_MINUTE_BURST          requests in the last minute      (default 6)  — stops rapid-fire
- *   AI_TRANSLATE_PER_HOUR    whole-lesson translations/hour   (default 10) — the one heavy task
+ *   AI_REQUESTS_PER_HOUR     requests in the last hour        (default 60) : stops grinding
+ *   AI_MINUTE_BURST          requests in the last minute      (default 6)  : stops rapid-fire
+ *   AI_TRANSLATE_PER_HOUR    whole-lesson translations/hour   (default 10) : the one heavy task
  *
  * Counting requests, not weighted "units", is deliberate: it is the number the reader can reason
  * about ("41 of 60 left"), it never prints a fraction in an error message, and the answer card can
- * show it verbatim. The cost of simplicity is that requests are not equal — a whole-lesson
- * `translate` asks for 32k output tokens where an answer asks for 8k — so that single task gets its
+ * show it verbatim. The cost of simplicity is that requests are not equal: a whole-lesson
+ * `translate` asks for 32k output tokens where an answer asks for 8k, so that single task gets its
  * own, smaller count inside the same windows. Everything else is one request, one count.
  *
  * Cost is charged before the call. A request that fails upstream has spent its count: the
@@ -57,7 +57,7 @@ const slotFor = (minute: number) => ((minute % MINUTES) + MINUTES) % MINUTES;
  * First `x-forwarded-for` hop, with the parts that vary per connection removed, so one device
  * lands in one bucket. Proxies append a source port, and a bucket per port is a fresh allowance
  * per request; an IPv6 zone id is the same problem in a nicer coat. Bracketed IPv6 is handled per
- * RFC 7239 (`[2001:db8::1]:443`) — deliberately not with a "looks like a colon address" regex:
+ * RFC 7239 (`[2001:db8::1]:443`), deliberately not with a "looks like a colon address" regex:
  * matching `2001:db8::1` to its last group folds every address ending in digits (most of them)
  * into a single shared allowance.
  */
@@ -74,7 +74,7 @@ export function clientIp(request: Request) {
  * Zero the slots the clock just walked into, so old requests fall out of the window.
  *
  * Each ring is exactly as long as the window, so the slot for the current minute is the slot of
- * `minute - 60` — a minute that stopped counting the moment this one began. Clearing every slot
+ * `minute - 60`, a minute that stopped counting the moment this one began. Clearing every slot
  * being stepped into is therefore the whole of the bookkeeping, and it is one slot *forward* from
  * the old minute: clearing backwards (the first version) erased the newest count on the common
  * one-request-per-minute path, so the hourly window never rose above one request.
@@ -99,7 +99,7 @@ function used(counts: Float64Array, minute: number, span: number) {
 /**
  * Seconds until the window can take one more request. Walks the clock forward and re-adds only the
  * history still inside the window at that moment, so the answer is the real expiry of the oldest
- * request — not a fixed "come back in an hour".
+ * request: not a fixed "come back in an hour".
  */
 function waitForRoom(window: Window, minute: number, limit: 'minute' | 'hour' | 'translate', now: number) {
   const secondsIntoMinute = Math.floor((now % 60_000) / 1000);

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AI_FAST_MODEL, AI_MODEL, acquireAiSlot, aiConfigured, getAiClient, isNativeClaude, transcriptionConfigured } from '@/lib/ai/server';
 import { QUOTA_LIMITS, chargeAi, humanize, limitLabel } from '@/lib/ai/quota';
-import { TASK_PROMPTS, TRANSLATOR_SYSTEM, TUTOR_SYSTEM, translateInstructions, type AiTask } from '@/lib/ai/prompts';
+import { TASK_PROMPTS, TRANSLATOR_SYSTEM, TUTOR_SYSTEM, translateInstructions, withAnswerLanguage, type AiTask } from '@/lib/ai/prompts';
 import { languageLabel } from '@/lib/ai/languages';
 import { getTopic } from '@/content/registry';
 
@@ -54,8 +54,8 @@ export async function POST(request: Request) {
       {
         error:
           quota.limit === 'translate'
-            ? `You have used this hour's whole-lesson translations — the next one is free in ${humanize(quota.retryAfterSec)}. Raise AI_TRANSLATE_PER_HOUR in .env.local if this is your own deployment.`
-            : `You have used your AI allowance for the ${limitLabel(quota.limit)} — ${quota.retryAfterSec <= 90 ? 'the next request is free in ' : 'try again in '}${humanize(quota.retryAfterSec)}, or raise AI_REQUESTS_PER_HOUR in .env.local if this is your own deployment.`,
+            ? `You have used this hour's whole-lesson translations. The next one is free in ${humanize(quota.retryAfterSec)}. Raise AI_TRANSLATE_PER_HOUR in .env.local if this is your own deployment.`
+            : `You have used your AI allowance for the ${limitLabel(quota.limit)}. ${quota.retryAfterSec <= 90 ? 'The next request is free in ' : 'Try again in '}${humanize(quota.retryAfterSec)}, or raise AI_REQUESTS_PER_HOUR in .env.local if this is your own deployment.`,
       },
       { status: 429, headers: { 'retry-after': String(quota.retryAfterSec), 'x-quota-limit': quota.limit } },
     );
@@ -86,6 +86,8 @@ export async function POST(request: Request) {
       if (source) content += `\n\nThe learner is reading the lesson "${topic.title}". Lesson source (MDX) for context:\n${source.slice(0, 24_000)}`;
     }
     if (body.schema) content += `\n\nCurrent database schema (live introspection):\n${body.schema.slice(0, 20_000)}`;
+    // The assistant's language picker applies to every prose answer, not only to translations.
+    content = withAnswerLanguage(content, task, languageLabel(body.language));
     if (task === 'complete') maxTokens = 1024;
   }
 
@@ -131,7 +133,7 @@ export async function POST(request: Request) {
       } catch (error) {
         const message =
           error instanceof Anthropic.AuthenticationError ? 'AI authentication failed: check ANTHROPIC_API_KEY / ANTHROPIC_AUTH_SCHEME in .env.local.'
-          : error instanceof Anthropic.RateLimitError ? 'AI rate limit reached — try again in a moment.'
+          : error instanceof Anthropic.RateLimitError ? 'AI rate limit reached, try again in a moment.'
           : error instanceof Anthropic.APIError ? `AI error ${error.status}: ${error.message}`
           : 'AI request failed.';
         controller.enqueue(encoder.encode(`\n\n**Error:** ${message}`));

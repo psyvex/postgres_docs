@@ -45,7 +45,7 @@ export const useDbStore = create<DbState>()(
     }),
     {
       name: 'postgres-lab:db',
-      // Password and server token stay in memory only — never written to localStorage.
+      // Password and server token stay in memory only: never written to localStorage.
       partialize: (s) => ({ mode: s.mode, connection: { ...s.connection, password: '' } }),
     },
   ),

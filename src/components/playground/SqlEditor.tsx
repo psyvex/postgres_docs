@@ -144,6 +144,7 @@ export function SqlEditor({ value, onChange, onRun, schema, schemaText, aiComple
 
   return (
     <Editor
+      wrapperProps={{ dir: 'ltr' }}
       language="sql"
       value={value}
       onChange={(v) => onChange(v ?? '')}

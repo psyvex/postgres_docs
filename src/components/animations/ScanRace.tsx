@@ -99,7 +99,7 @@ export function ScanRace() {
   const fetched = hasIndex && stage >= 4;
   const indexPages = indexPagesRead(level, s);
 
-  // Control changes reset the run inline — an effect here would cost an extra render on every click.
+  // Control changes reset the run inline, an effect here would cost an extra render on every click.
   const pick = (next: QueryKey) => {
     setQ(next);
     setStage(-1);
@@ -213,7 +213,7 @@ function Legend({ cls, children }: { cls: string; children: React.ReactNode }) {
   );
 }
 
-/** One row of 1,031 plain divs, coloured by class — 1,031 animated nodes would be the wrong tool. */
+/** One row of 1,031 plain divs, coloured by class, 1,031 animated nodes would be the wrong tool. */
 function Strip({ label, icon, tone, read, of, hint }: { label: string; icon: 'compass' | 'indexes'; tone: 'warn' | 'brand'; read: number; of: number; hint?: string }) {
   return (
     <div className="mb-3">

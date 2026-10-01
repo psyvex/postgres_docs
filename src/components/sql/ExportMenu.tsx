@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { Download } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useMotionPresets } from '@/lib/motion';
 
 type Props = { columns: string[]; rows: Record<string, unknown>[] };
 
@@ -54,6 +56,7 @@ export function ExportMenu({ columns, rows }: Props) {
   const [open, setOpen] = useState(false);
   const [fb, setFb] = useState<Feedback>('idle');
   const [lastFmt, setLastFmt] = useState<Format>('csv');
+  const { popover: menu } = useMotionPresets();
 
   function flash(f: Feedback, fmt: Format) {
     setFb(f); setLastFmt(fmt);
@@ -95,36 +98,41 @@ export function ExportMenu({ columns, rows }: Props) {
       {fb !== 'idle' && (
         <span className={`ml-1 text-[11px] font-semibold ${FB_CLS[fb]}`}>{FB_LABEL[fb]} {lastFmt.toUpperCase()}</span>
       )}
+      <AnimatePresence>
       {open && (
         <>
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
-          <ul className="absolute right-0 top-full z-30 mt-1 min-w-36 overflow-hidden rounded-lg border border-line bg-surface shadow-card text-xs">
+          <motion.ul
+            className="absolute end-0 top-full z-30 mt-1 min-w-36 overflow-hidden rounded-lg border border-line bg-surface shadow-card text-xs"
+            {...menu}
+          >
             {(
               [
                 ['Copy as CSV', 'csv', 'copy'],
                 ['Copy as JSON', 'json', 'copy'],
                 ['Copy as INSERT', 'insert', 'copy'],
-                ['—', '', ''],
+                ['|', '', ''],
                 ['Download CSV', 'csv', 'download'],
                 ['Download JSON', 'json', 'download'],
               ] as const
             ).map(([label, fmt, action]) =>
-              label === '—' ? (
+              label === '|' ? (
                 <li key="sep" className="border-t border-line" />
               ) : (
                 <li key={label}>
                   <button
                     onClick={() => run(fmt as Format, action as 'copy' | 'download')}
-                    className="w-full px-3 py-1.5 text-left hover:bg-surface-2"
+                    className="w-full px-3 py-1.5 text-start hover:bg-surface-2"
                   >
                     {label}
                   </button>
                 </li>
               ),
             )}
-          </ul>
+          </motion.ul>
         </>
       )}
+      </AnimatePresence>
     </div>
   );
 }

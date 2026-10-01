@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { STILL, useMotionPresets } from '@/lib/motion';
 import clsx from 'clsx';
 import { BookOpenText, Crosshair, GripVertical, Languages, MessageCircleQuestion, Send, Sparkles, Trash2, X } from 'lucide-react';
 import { useAiEnabled, type AiPayload, type AiTask } from '@/lib/ai/client';
@@ -19,7 +20,7 @@ type Pos = { x: number; y: number };
 const PREF_KEY = 'postgres-lab:lang';
 const POS_KEY = 'postgres-lab:copilot:pos';
 
-/* Draggable copilot geometry — same shape as the research repo's copilot launcher. */
+/* Draggable copilot geometry, same shape as the research repo's copilot launcher. */
 const EDGE = 8;
 const FAB = 52;
 const PANEL_W = 420;
@@ -51,16 +52,21 @@ function panelBox(pos: Pos, flip: { left: boolean; up: boolean }) {
 
 /**
  * Lesson-aware AI helper: a floating "Ask this lesson" panel (typed or spoken questions, answered
- * with the lesson as context) plus a toolbar on selected text — explain simpler, translate, ask.
+ * with the lesson as context) plus a toolbar on selected text: explain simpler, translate, ask.
  */
 export function LessonAssistant({ slug, title }: { slug: string; title: string }) {
   const aiEnabled = useAiEnabled();
   useAiFontSize(); // publishes --ai-fs as soon as any AI UI is on the page
+  // The copilot's spring and popovers are its personality, so they stay; `still` is the one thing
+  // they must give up when the visitor asked for reduced motion (spread last, so it wins).
+  const { still, popover: selectionBar } = useMotionPresets();
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState('');
   const [requests, setRequests] = useState<Request[]>([]);
   const [selection, setSelection] = useState<Selection>(null);
-  const [lang, setLang] = useState('hi');
+  // English until a saved preference is read: the picker and the answers must agree, so a fresh
+  // visitor sees English selected and gets English answers.
+  const [lang, setLang] = useState('en');
   const list = useRef<HTMLDivElement>(null);
 
   /* ── movable copilot ──────────────────────────────────────────────────────
@@ -137,7 +143,7 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
 
   useEffect(() => {
     try {
-      setLang(localStorage.getItem(PREF_KEY) || 'hi');
+      setLang(localStorage.getItem(PREF_KEY) || 'en');
     } catch {}
   }, [open]);
 
@@ -162,11 +168,15 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
     };
   }, [aiEnabled]);
 
+  /**
+   * The panel's language picker governs every answer, so the code rides on all of them: an ask
+   * picked up in Hindi must arrive in Hindi. `translateText` carries its own target, which wins.
+   */
   const push = (task: AiTask, title: string, payload: AiPayload) => {
     setOpen(true);
     setSelection(null);
     window.getSelection()?.removeAllRanges();
-    setRequests((r) => [...r, { id: Date.now(), task, title, payload: { lesson: slug, ...payload } }].slice(-8));
+    setRequests((r) => [...r, { id: Date.now(), task, title, payload: { lesson: slug, language: lang, ...payload } }].slice(-8));
     setTimeout(() => list.current?.scrollTo({ top: list.current.scrollHeight, behavior: 'smooth' }), 50);
   };
 
@@ -184,9 +194,7 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
       <AnimatePresence>
         {selection && (
           <motion.div
-            initial={{ opacity: 0, y: 6, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0 }}
+            {...selectionBar}
             className="fixed z-50 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-xl border border-line bg-surface p-1 shadow-card"
             style={{ left: selection.x, top: selection.y - 8 }}
             onMouseDown={(e) => e.preventDefault()}
@@ -213,7 +221,7 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
             setOpen((v) => !v);
           }
         }}
-        title="Lesson assistant — drag me anywhere"
+        title="Lesson assistant: drag me anywhere"
         aria-label={open ? 'Close lesson assistant' : 'Ask this lesson'}
         style={{ width: FAB, height: FAB, ...(pos ? { top: pos.y, left: pos.x, right: 'auto' as const, bottom: 'auto' as const } : {}) }}
         className={clsx(
@@ -232,6 +240,7 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+            {...(still ? STILL : {})}
             style={pos ? panelBox(pos, flip.current) : { right: 24, bottom: 88, width: PANEL_W, height: PANEL_H }}
             className="fixed z-40 flex flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card"
           >
@@ -257,6 +266,7 @@ export function LessonAssistant({ slug, title }: { slug: string; title: string }
                   align="right"
                   size="sm"
                   includeEnglish
+                  hint="Answer language"
                   value={lang}
                   onChange={(code) => {
                     setLang(code);

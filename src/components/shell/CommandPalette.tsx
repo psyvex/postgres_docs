@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { AnimatePresence, motion } from 'motion/react';
+import { useMotionPresets } from '@/lib/motion';
 import { topics } from '@/content/registry';
 import { PERSONAS as PERSONAS_CANONICAL } from '@/lib/sql/session';
 import { Icon } from '@/components/icons';
@@ -55,7 +57,7 @@ const SNIPPETS: SnippetItem[] = [
 const TABLES: TableItem[] = [
   { id: 't1', type: 'table', title: 'tasks', description: 'The board: title, status, org_id, assignee' },
   { id: 't2', type: 'table', title: 'organizations', description: 'Tenants: Acme Rockets, Globex Labs' },
-  { id: 't3', type: 'table', title: 'members', description: 'Alice, Bob, Carol, Dan — one org each' },
+  { id: 't3', type: 'table', title: 'members', description: 'Alice, Bob, Carol, Dan. One org each' },
   { id: 't4', type: 'table', title: 'projects', description: 'Projects, each owned by an org' },
   { id: 't5', type: 'table', title: 'audit_log', description: 'Who changed what, when' },
 ];
@@ -122,7 +124,7 @@ function score(item: Item, q: string): number {
 
 /**
  * The whole ranking rule, in one pure call: score every item, group it under its section, then float
- * the section holding the strongest hit to the top — so Enter opens what the query names. Typing
+ * the section holding the strongest hit to the top, so Enter opens what the query names. Typing
  * "carol" has to surface the persona called Carol, not a lesson whose tagline happens to contain the
  * same letters in order. Exported because that contract is worth a test and hard to see in the DOM.
  */
@@ -148,6 +150,8 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
+  // The same dialog presets every other pop-up uses: backdrop fades, panel grows in from 98%.
+  const { backdrop: dialogBackdropFade, panel: dialogPanel } = useMotionPresets();
 
   useEffect(() => {
     // Where the learner was before ⌘K, so closing the palette doesn't drop them at the top of the page.
@@ -172,7 +176,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
     onClose();
   }
 
-  /** Position of each visible row in the flattened list — the arrow-key counter, keyed by item. */
+  /** Position of each visible row in the flattened list, the arrow-key counter, keyed by item. */
   const rowIndex = new Map(flat.map((e, i) => [e.item.id, i]));
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -199,16 +203,21 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
   }, [active]);
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-start justify-center px-4 pt-[12vh]" onClick={onClose}>
+    <motion.div
+      className="fixed inset-0 z-[90] flex items-start justify-center px-4 pt-[12vh]"
+      onClick={onClose}
+      {...dialogBackdropFade}
+    >
       <div className="absolute inset-0 bg-black/45 backdrop-blur-sm" />
 
-      <div
+      <motion.div
         role="dialog"
         aria-modal="true"
         aria-label="Search the lab"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
         className="relative flex max-h-[72vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card"
+        {...dialogPanel}
       >
         {/* Search field */}
         <div className="flex items-center gap-2.5 border-b border-line px-4 py-3">
@@ -285,7 +294,7 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
                           ? item.tagline
                           : 'description' in item
                             ? item.description
-                            : item.role ? `SET ROLE ${item.role}` : 'superuser — sees everything'}
+                            : item.role ? `SET ROLE ${item.role}` : 'superuser (sees everything)'}
                       </span>
                     </span>
                     <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted" />
@@ -301,10 +310,10 @@ export function CommandPalette({ onClose }: { onClose: () => void }) {
           <span><kbd className="font-mono">↑↓</kbd> navigate</span>
           <span><kbd className="font-mono">↵</kbd> open</span>
           <span><kbd className="font-mono">esc</kbd> close</span>
-          <span className="ml-auto">{flat.length} result{flat.length === 1 ? '' : 's'}</span>
+          <span className="ms-auto">{flat.length} result{flat.length === 1 ? '' : 's'}</span>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -329,6 +338,11 @@ export function CommandPaletteLauncher() {
     };
   }, []);
 
-  if (!open) return null;
-  return <CommandPalette onClose={() => setOpen(false)} />;
+  // AnimatePresence, not a bare conditional: the palette's `exit` props only run if the tree that
+  // removes it is watching for them, which is what makes closing as designed as opening.
+  return (
+    <AnimatePresence>
+      {open && <CommandPalette onClose={() => setOpen(false)} />}
+    </AnimatePresence>
+  );
 }

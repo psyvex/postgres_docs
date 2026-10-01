@@ -12,6 +12,7 @@ import { MvccExplainer } from '@/components/animations/MvccExplainer';
 import { PartitionPruner } from '@/components/animations/PartitionPruner';
 import { PitrTimeline } from '@/components/animations/PitrTimeline';
 import { JsonTree } from '@/components/animations/JsonTree';
+import { ProjectFiles } from '@/components/animations/ProjectFiles';
 import { ResetDemo } from '@/components/docs/ResetDemo';
 import { No, Yes } from '@/components/docs/Mark';
 import { Icon } from '@/components/icons';
@@ -38,6 +39,7 @@ const components: MDXComponents = {
   PartitionPruner,
   PitrTimeline,
   JsonTree,
+  ProjectFiles,
   ResetDemo,
   Icon,
   Yes,

@@ -10,7 +10,7 @@ import { Reveal, SectionHeading } from './Reveal';
 
 const STEPS: { icon: IconName; title: string; copy: string }[] = [
   { icon: 'note', title: 'Read', copy: 'Short, practical explanations with analogies, version notes and links to the official PostgreSQL docs.' },
-  { icon: 'statement', title: 'Run', copy: 'Every example is live. Pick a persona — Alice, Bob, anonymous — and run it against a real database.' },
+  { icon: 'statement', title: 'Run', copy: 'Every example is live. Pick a persona (Alice, Bob, anonymous) and run it against a real database.' },
   { icon: 'burst', title: 'Break', copy: 'Turn RLS off, grant too much, forget WITH CHECK. See exactly how things fail, then fix them.' },
 ];
 

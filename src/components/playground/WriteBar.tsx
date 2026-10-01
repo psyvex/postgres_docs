@@ -6,6 +6,8 @@ import { Loader2, Wand2, X } from 'lucide-react';
 import { streamAi, stripFence } from '@/lib/ai/client';
 import { highlightSql } from '@/lib/sql/highlight';
 import { VoiceButton } from '@/components/ai/VoiceButton';
+import { useMotionPresets } from '@/lib/motion';
+import { useT } from '@/lib/i18n/useT';
 
 type Props = {
   /** Current editor SQL (sent as context). */
@@ -19,6 +21,8 @@ const EXAMPLES = ['tasks per org with % done', 'policy: members update only thei
 
 /** "Describe what you want" → SQL, streamed with a live preview, then applied to the editor. */
 export function WriteBar({ sql, schemaText, onWrite }: Props) {
+  const { t } = useT();
+  const { popover: draftCard } = useMotionPresets();
   const [prompt, setPrompt] = useState('');
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,23 +60,23 @@ export function WriteBar({ sql, schemaText, onWrite }: Props) {
         <input
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Describe what you want, e.g. “tasks per org with % done” — AI writes the SQL"
+          placeholder={t.playground.writeSqlPlaceholder}
           className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
-          aria-label="Describe the SQL you want"
+          aria-label={t.playground.writeSqlAria}
         />
         <VoiceButton onText={(t) => { setPrompt(t); write(t); }} />
         {busy ? (
           <button type="button" onClick={() => abort.current?.abort()} className="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold">
-            <X className="h-3.5 w-3.5" /> Stop
+            <X className="h-3.5 w-3.5" /> {t.playground.stop}
           </button>
         ) : (
           <button type="submit" disabled={!prompt.trim()} className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40">
-            Write SQL
+            {t.playground.writeSql}
           </button>
         )}
       </form>
       {!prompt && !busy && (
-        <div className="mt-1.5 flex flex-wrap gap-1.5 pl-6">
+        <div className="mt-1.5 flex flex-wrap gap-1.5 ps-6">
           {EXAMPLES.map((ex) => (
             <button key={ex} onClick={() => { setPrompt(ex); write(ex); }} className="rounded-full border border-line bg-surface px-2 py-0.5 text-[11px] text-muted hover:border-accent hover:text-text">
               {ex}
@@ -83,13 +87,11 @@ export function WriteBar({ sql, schemaText, onWrite }: Props) {
       <AnimatePresence>
         {draft !== null && (
           <motion.div
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
+            {...draftCard}
             className="absolute inset-x-3 top-full z-20 mt-1 max-h-56 overflow-auto rounded-xl border border-accent/30 bg-code-bg p-3 font-mono text-[calc(var(--ai-fs,15px)*0.85)] leading-relaxed text-code-text shadow-card"
           >
             <div className="mb-1 flex items-center gap-1.5 font-sans text-[11px] font-bold text-accent">
-              {busy ? <><Loader2 className="h-3 w-3 animate-spin" /> Writing SQL…</> : 'Inserted into the editor (⌘Z to undo)'}
+              {busy ? <><Loader2 className="h-3 w-3 animate-spin" />{t.playground.writingSql}</> : t.playground.insertedSql}
             </div>
             <pre className="whitespace-pre-wrap">{highlightSql(draft)}</pre>
           </motion.div>

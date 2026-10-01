@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 
-/** Keywords drifting in the background — deliberately faint; decoration, not content. */
+/** Keywords drifting in the background, deliberately faint; decoration, not content. */
 const WORDS = [
   { w: 'SELECT', x: 6, y: 14, d: 22 },
   { w: 'GRANT', x: 38, y: 8, d: 26 },

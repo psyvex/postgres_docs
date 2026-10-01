@@ -5,7 +5,7 @@ import { diffLines } from 'diff';
 export function DiffView({ original, improved }: { original: string; improved: string }) {
   const parts = diffLines(original + '\n', improved + '\n');
   return (
-    <div className="overflow-x-auto rounded-lg border border-line bg-code-bg text-xs leading-relaxed">
+    <div dir="ltr" className="overflow-x-auto rounded-lg border border-line bg-code-bg text-xs leading-relaxed">
       <pre className="p-3 font-mono">
         {parts.map((part, i) => {
           const lines = part.value.replace(/\n$/, '').split('\n');

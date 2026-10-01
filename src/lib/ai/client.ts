@@ -55,13 +55,13 @@ export async function streamAi(
     const { done, value } = await reader.read();
     if (done) break;
     text += decoder.decode(value, { stream: true });
-    // Don't expose the trailer to the UI — strip it from every live snapshot.
+    // Don't expose the trailer to the UI: strip it from every live snapshot.
     onText(text.replace(TRAILER_RE, ''));
   }
   // Final pass: extract usage from the trailer (if present).
   const trailer = text.match(TRAILER_RE);
   if (trailer && onUsage) {
-    try { onUsage(JSON.parse(trailer[1]) as { i: number; o: number }); } catch { /* malformed trailer — ignore */ }
+    try { onUsage(JSON.parse(trailer[1]) as { i: number; o: number }); } catch { /* malformed trailer: ignore */ }
   }
   return text.replace(TRAILER_RE, '');
 }

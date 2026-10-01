@@ -30,7 +30,7 @@ function heroStats(): HeroStat[] {
   ];
 }
 
-/** Total checkable blocks across all lessons — for the home-page progress summary. */
+/** Total checkable blocks across all lessons, for the home-page progress summary. */
 function totalCheckable(): number {
   const root = path.join(process.cwd(), 'src/content/topics');
   let n = 0;
@@ -47,7 +47,7 @@ export default function Home() {
   const planned = topics.filter((t) => t.status === 'planned');
 
   return (
-    <main className="w-full px-4 pb-20 sm:px-8 xl:px-12">
+    <main dir="ltr" className="w-full px-4 pb-20 sm:px-8 xl:px-12">
       <section className="relative isolate -mx-4 grid min-h-[calc(100vh-3.5rem)] items-center gap-6 px-4 py-10 sm:-mx-8 sm:px-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:py-6 xl:-mx-12 xl:px-12">
         <HeroBackdrop coreX={73} coreY={46} />
         <HeroSketches />
@@ -85,7 +85,7 @@ export default function Home() {
 
       {break_.length > 0 && (
         <section className="py-16">
-          <SectionHeading eyebrow="Break-it labs" title={<>Turn the lesson <span className="text-warn">against itself.</span></>} copy="You are Bob. Your job: break the RLS policy. Every challenge is a graded assertion — the answer card tells you what went wrong." />
+          <SectionHeading eyebrow="Break-it labs" title={<>Turn the lesson <span className="text-warn">against itself.</span></>} copy="You are Bob. Your job: break the RLS policy. Every challenge is a graded assertion, and the answer card tells you what went wrong." />
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
             {break_.map((t, i) => (
               <Reveal key={t.slug} index={i}>

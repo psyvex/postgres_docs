@@ -8,7 +8,7 @@ const SIZE = 300; // stage size (px); the mark itself is ~45% of it
 
 /**
  * Centre of the hero universe: the Webelight mark as a live "database core".
- * No plate or border — a soft halo, two counter-rotating energy arcs, halves that breathe
+ * No plate or border, a soft halo, two counter-rotating energy arcs, halves that breathe
  * apart and back together, and the PostgreSQL badge floating at its lower right.
  */
 export function HeroCore() {

@@ -19,7 +19,7 @@ describe('clientIp', () => {
   });
 
   it('keeps two IPv6 visitors in two buckets', () => {
-    // A colon-truncating regex used to reduce both of these to "1" — one shared allowance.
+    // A colon-truncating regex used to reduce both of these to "1": one shared allowance.
     expect(clientIp(req({ 'x-forwarded-for': '2001:db8::1' }))).toBe('2001:db8::1');
     expect(clientIp(req({ 'x-forwarded-for': '2001:db8::2' }))).toBe('2001:db8::2');
   });
@@ -53,7 +53,7 @@ describe('charge', () => {
     // One per minute: clear of the burst cap, so this is the translate allowance doing the work.
     for (let m = 0; m < 10; m++) expect(charge('ip-d', 'translate', T0 + m * MIN).allowed).toBe(true);
     expect(charge('ip-d', 'translate', T0 + 10 * MIN)).toMatchObject({ allowed: false, limit: 'translate' });
-    // An ordinary question is unaffected — it just spent 10 of the hourly 60.
+    // An ordinary question is unaffected: it just spent 10 of the hourly 60.
     expect(charge('ip-d', 'ask', T0 + 10 * MIN).allowed).toBe(true);
   });
 
@@ -121,7 +121,7 @@ describe('isHeavy', () => {
 describe('humanize', () => {
   it('is readable at every scale', () => {
     expect(humanize(5)).toBe('5 s');
-    expect(humanize(0)).toBe('1 s'); // never "0 s" — a denial that says "come back in 0 s" is a lie
+    expect(humanize(0)).toBe('1 s'); // never "0 s": a denial that says "come back in 0 s" is a lie
     expect(humanize(95)).toBe('2 min');
     expect(humanize(7_000)).toBe('117 min'); // stays in minutes below two hours
     expect(humanize(7_200)).toBe('2 h');

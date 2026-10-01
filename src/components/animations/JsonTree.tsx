@@ -85,32 +85,32 @@ const NORMALISED_EXPLAINERS = [
 
 const MUTATIONS = [
   {
-    label: 'jsonb_set — add key',
+    label: 'jsonb_set · add key',
     sql: `SELECT jsonb_set('{"title":"hello"}'::jsonb, '{author}', '"Alice"') AS updated;`,
     result: '{"title":"hello","author":"Alice"}',
   },
   {
-    label: '|| — merge objects',
+    label: '|| · merge objects',
     sql: `SELECT '{"title":"hello"}'::jsonb || '{"author":"Alice"}'::jsonb AS merged;`,
     result: '{"title":"hello","author":"Alice"}',
   },
   {
-    label: '- key — delete key',
+    label: '- key · delete key',
     sql: `SELECT '{"title":"hello","author":"Alice"}'::jsonb - 'author' AS deleted;`,
     result: '{"title":"hello"}',
   },
   {
-    label: '#- — delete nested path',
+    label: '#- · delete nested path',
     sql: `SELECT '{"user":{"name":"Alice","email":"a@b.com"}}'::jsonb #- '{user,email}' AS result;`,
     result: '{"user":{"name":"Alice"}}',
   },
   {
-    label: 'jsonb_insert — into array',
+    label: 'jsonb_insert · into array',
     sql: `SELECT jsonb_insert('[1,2,3]'::jsonb, '{1}', '99') AS inserted;`,
     result: '[1,99,2,3]',
   },
   {
-    label: 'strip_nulls — remove nulls',
+    label: 'strip_nulls · remove nulls',
     sql: `SELECT jsonb_strip_nulls('{"a":null,"b":1,"c":{"d":null}}'::jsonb) AS result;`,
     result: '{"b":1,"c":{}}',
   },
@@ -313,7 +313,7 @@ function KeyOrderView() {
           <span className="font-mono text-brand">B</span>
           <span className="text-muted">→</span>
           <span className="font-mono font-semibold text-good">true</span>
-          <span className="text-muted text-xs">— a single binary comparison, no re-parse</span>
+          <span className="text-muted text-xs">, a single binary comparison, no re-parse</span>
         </div>
       </div>
     </div>

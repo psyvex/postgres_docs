@@ -3,12 +3,12 @@ import { readyTopics } from '@/content/registry';
 import { SITE_DESCRIPTION, SITE_NAME } from '@/lib/site';
 
 /**
- * Default share card for the routes without a lesson of their own — the home
+ * Default share card for the routes without a lesson of their own: the home
  * page, the playground, settings. Same editor framing as the lesson cards
  * (colours copied from the dark tokens in globals.css, which satori can't read).
  */
 
-export const alt = 'Postgres Lab — learn PostgreSQL security hands-on';
+export const alt = 'Postgres Lab: learn PostgreSQL security hands-on';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 
@@ -46,7 +46,7 @@ export default function SiteOgImage() {
           <div style={{ width: 15, height: 15, borderRadius: 999, background: C.warn }} />
           <div style={{ width: 15, height: 15, borderRadius: 999, background: C.good }} />
           <div style={{ marginLeft: 10, fontSize: 22, color: C.muted, fontFamily: 'monospace' }}>
-            psql — postgresql 18 — in your browser
+            psql: postgresql 18, in your browser
           </div>
         </div>
 
@@ -87,7 +87,7 @@ export default function SiteOgImage() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <div style={{ width: 12, height: 12, borderRadius: 999, background: C.good }} />
-            <span style={{ color: C.muted }}>A real server in WebAssembly — your SQL never leaves the browser</span>
+            <span style={{ color: C.muted }}>A real server in WebAssembly. Your SQL never leaves the browser</span>
           </div>
           <span style={{ display: 'flex', color: C.accent }}>{`${readyTopics.length} lessons`}</span>
         </div>

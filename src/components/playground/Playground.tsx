@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import clsx from 'clsx';
 import type * as Monaco from 'monaco-editor';
-import { Loader2, MessageSquareText, PanelBottomClose, PanelBottomOpen, PanelRightClose, Play, Share2, ShieldCheck, Sparkles, Undo2, Users, Wand2, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useMotionPresets } from '@/lib/motion';
+import { Link2, Loader2, MessageSquareText, PanelBottomClose, PanelBottomOpen, PanelRightClose, Play, ShieldCheck, Sparkles, Undo2, Users, Wand2, X } from 'lucide-react';
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string';
 import { runSql, useDbStore } from '@/lib/db/store';
 import type { RunResult } from '@/lib/db/types';
@@ -15,6 +17,7 @@ import { personaContext, withContext } from '@/lib/sql/session';
 import { useAiEnabled } from '@/lib/ai/client';
 import { AiAnswer } from '@/components/ai/AiAnswer';
 import { useAiFontSize } from '@/components/ai/useAiFontSize';
+import { LanguagePicker } from '@/components/ai/LanguagePicker';
 import { VoiceButton } from '@/components/ai/VoiceButton';
 import { WriteBar } from './WriteBar';
 import { ResultView } from '@/components/sql/ResultView';
@@ -25,8 +28,11 @@ import { TableBrowser } from './TableBrowser';
 import { RlsMatrixPanel, type RlsMatrixResult } from './RlsMatrixPanel';
 import { ToolbarMore } from './ToolbarMore';
 import { isPlanResult } from '@/components/sql/PlanTree';
+import { useT } from '@/lib/i18n/useT';
 
 const DRAFT_KEY = 'postgres-lab:playground-sql';
+/** Shared with the lesson copilot and the lesson translator: one answer language for the whole app. */
+const LANG_KEY = 'postgres-lab:lang';
 /** Height of the Results/Table panel, owned by the drag handle and kept between visits. */
 const BOTTOM_KEY = 'postgres-lab:playground:bottom';
 const BOTTOM_MIN = 96;
@@ -52,7 +58,7 @@ const SNIPPETS: { label: string; sql: string }[] = [
 ];
 
 /** `schema` is a snapshot taken when the question is asked, so the answer's cache key stays put. */
-type AiRequest = { id: number; task: 'explain' | 'fix' | 'ask' | 'review' | 'explainPlan'; title: string; sql: string; schema: string; error?: string; question?: string; plan?: string };
+type AiRequest = { id: number; task: 'explain' | 'fix' | 'ask' | 'review' | 'explainPlan'; title: string; sql: string; schema: string; error?: string; question?: string; plan?: string; language: string };
 
 export function Playground() {
   const params = useSearchParams();
@@ -71,6 +77,8 @@ export function Playground() {
   const [rlsMatrix, setRlsMatrix] = useState<RlsMatrixResult | null>(null);
   const [asks, setAsks] = useState<AiRequest[]>([]);
   const [question, setQuestion] = useState('');
+  /** Language of the assistant's *answers* (not the UI chrome). English until a saved pick is read. */
+  const [askLang, setAskLang] = useState('en');
   const [bottomH, setBottomH] = useState(BOTTOM_DEFAULT);
   const [bottomClosed, setBottomClosed] = useState(false);
   const [bottomDrag, setBottomDrag] = useState(false);
@@ -82,12 +90,16 @@ export function Playground() {
   const [wide, setWide] = useState(true);
   /** Persistence stays asleep until the stored size has been read, so the writer never saves defaults over it. */
   const [bottomReady, setBottomReady] = useState(false);
+  /** Interface language. `dir` flips the two pinned-to-an-edge clusters when Arabic is active. */
+  const { t } = useT();
   const mainRef = useRef<HTMLElement>(null);
   const drag = useRef<{ y: number; h: number } | null>(null);
   /** Lets an unmount mid-drag detach the window listeners it added. */
   const dragEnd = useRef<(() => void) | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const aiEnabled = useAiEnabled();
+  /** Bottom-panel tab swaps, the panel collapse, and the assistant sheet all share the app's motion layer. */
+  const { tab: tabSwap, fade: contentFade, sheet: assistantSheet, backdrop: sheetBackdrop } = useMotionPresets();
   useAiFontSize(); // publishes --ai-fs so every AI answer shares one readable size
   const { schema, error } = useSchema();
   const schemaText = useMemo(() => describeSchema(schema), [schema]);
@@ -125,6 +137,22 @@ export function Playground() {
     if (asParam) setPersona(asParam);
   }
 
+  /**
+   * Answer language is a reader preference, shared with the lesson copilot and the lesson translator.
+   * Read a frame late: the server has no `localStorage`, so the first paint must agree with it on the
+   * English default, and a synchronous `setAskLang` in the effect body is the cascading-render shape
+   * `react-hooks/set-state-in-effect` warns about (the same reason `/settings` defers its read).
+   */
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      try {
+        const saved = localStorage.getItem(LANG_KEY);
+        if (saved) setAskLang(saved);
+      } catch {}
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
+
   useEffect(() => {
     try {
       localStorage.setItem(DRAFT_KEY, sql);
@@ -159,7 +187,7 @@ export function Playground() {
   }, []);
 
   /**
-   * A phone loads with the sheet shut, and Escape closes it again — the two ways a panel that covers
+   * A phone loads with the sheet shut, and Escape closes it again, the two ways a panel that covers
    * the editor must be dismissible. Desktop keeps its toggle; the column never covers anything.
    */
   useEffect(() => {
@@ -173,7 +201,7 @@ export function Playground() {
   }, [wide]);
 
   /**
-   * Room left by the toolbar and the Write bar, minus the slider and the editor's floor — measured,
+   * Room left by the toolbar and the Write bar, minus the slider and the editor's floor, measured,
    * not guessed, because the Write bar grows by a row when its example chips appear. Guessing here
    * overflowed the page by 78 px at full extension.
    */
@@ -300,18 +328,34 @@ export function Playground() {
     // SET ROLE/SET app.* have no columns; toStatements includes them in results.
     // The SELECT probes are the rows with columns.length > 0.
     const selects = probe.results.filter((r) => r.columns.length > 0);
-    const toIds = (idx: number): number[] =>
-      selects[idx] ? ((selects[idx].rows[0] as Record<string, unknown>)[selects[idx].columns[0]] as number[]) ?? [] : [];
-    const allIds = toIds(0);
     const MATRIX_LABELS: [string, string][] = [
       ['owner', 'Superuser'], ['alice', 'Alice · Acme'], ['bob', 'Bob · Acme'], ['carol', 'Carol · Globex'],
     ];
+    // The four id probes are the last statements to run, so count back from the end. Counting forward
+    // from the first column-bearing result shifts every slot by one whenever the editor holds a SELECT
+    // instead of a policy, and `allIds` ends up holding that row's scalar: `number[].includes` then
+    // throws out of a callback with no error boundary.
+    const probes = selects.slice(-MATRIX_LABELS.length);
+    const toIds = (idx: number): number[] | null => {
+      const value = probes[idx]?.rows[0]?.[probes[idx].columns[0]];
+      return Array.isArray(value) ? (value as number[]) : null;
+    };
+    const idSets = MATRIX_LABELS.map((_, i) => toIds(i));
+    if (idSets.some((ids) => ids === null)) {
+      setRlsMatrix({
+        taskIds: [],
+        personas: [],
+        error: 'The RLS probe could not read its id arrays. Put a single policy statement in the editor, then run it again.',
+      });
+      return;
+    }
+    const allIds = idSets[0] as number[];
     setRlsMatrix({
       taskIds: allIds,
       personas: MATRIX_LABELS.map(([id, label], i) => ({
         id,
         label,
-        taskIds: id === 'owner' ? allIds : toIds(i).filter((tid) => allIds.includes(tid)),
+        taskIds: id === 'owner' ? allIds : (idSets[i] as number[]).filter((tid) => allIds.includes(tid)),
       })),
     });
   }, [sql]);
@@ -325,12 +369,13 @@ export function Playground() {
     const plan = res.results[res.results.length - 1]?.rows[0]?.['QUERY PLAN'];
     if (!plan) return;
     setAiOpen(true);
-    setAsks((a) => [{ task: 'explainPlan' as const, title: 'Explain plan', sql: text, plan: JSON.stringify(plan), schema: schemaText, id: Date.now() }, ...a].slice(0, 8));
-  }, [sql, schemaText]);
+    setAsks((a) => [{ task: 'explainPlan' as const, title: 'Explain plan', sql: text, plan: JSON.stringify(plan), schema: schemaText, language: askLang, id: Date.now() }, ...a].slice(0, 8));
+  }, [sql, schemaText, askLang]);
 
-  const ask = (req: Omit<AiRequest, 'id' | 'schema'>) => {
+  /** Every prose request carries the answer language, so the picker in the panel header is honoured. */
+  const ask = (req: Omit<AiRequest, 'id' | 'schema' | 'language'>) => {
     setAiOpen(true);
-    setAsks((a) => [{ ...req, schema: schemaText, id: Date.now() }, ...a].slice(0, 8));
+    setAsks((a) => [{ ...req, schema: schemaText, language: askLang, id: Date.now() }, ...a].slice(0, 8));
   };
 
   /** AI-written SQL replaces the editor content as a single undoable edit (⌘Z restores the old query). */
@@ -382,85 +427,85 @@ export function Playground() {
 
   return (
     <div className={clsx('grid h-[calc(100vh-3.5rem)] w-full grid-cols-1', aiOpen ? 'lg:grid-cols-[250px_minmax(0,1fr)] 2xl:grid-cols-[260px_minmax(0,1fr)_400px]' : 'lg:grid-cols-[250px_minmax(0,1fr)]')}>
-      <aside className="hidden min-h-0 border-r border-line bg-surface lg:block">
+      <aside className="hidden min-h-0 border-e border-line bg-surface lg:block">
         <Explorer schema={schema} error={error} selected={selected} onInsert={insert} onSelectTable={(q) => { setSelected(q); setBottom('table'); }} />
       </aside>
 
       {/* `grid-cols-[minmax(0,1fr)]` is load-bearing: Monaco stamps a pixel width onto its own DOM
-          node, and an implicit grid track is floored at that min-content width — so the column could
+          node, and an implicit grid track is floored at that min-content width, so the column could
           only ever grow, and after a window shrink the page scrolled sideways (1179px in a 400px
           phone viewport). A zero-minimum track lets Monaco's `automaticLayout` shrink it back. */}
       <main ref={mainRef} className="grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)]" style={{ gridTemplateRows: `auto auto minmax(${EDITOR_MIN}px,1fr) ${SLIDER}px ${bottomClosed ? 'auto' : `${bottomH}px`}` }}>
         <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface px-3 py-2">
-          <button onClick={execute} disabled={running} className="flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-bold text-on-brand shadow-card disabled:opacity-60">
-            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Run
-            <kbd className="ml-1 hidden rounded bg-white/20 px-1 text-[10px] sm:inline">⌘↵</kbd>
+          <button onClick={execute} disabled={running} title={t.playground.runTitle} className="flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-bold text-on-brand shadow-card disabled:opacity-60">
+            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} {t.common.run}
+            <kbd className="ms-1 hidden rounded bg-white/20 px-1 text-[10px] sm:inline">⌘↵</kbd>
           </button>
-          <PersonaSelect value={persona} onChange={setPersona} prefix="Run as" align="left" />
+          <PersonaSelect value={persona} onChange={setPersona} prefix={t.playground.runAs} align="left" />
 
-          {/* T5-6: below `sm` the bar keeps only Run, Run as, More and the assistant toggle — the
+          {/* T5-6: below `sm` the bar keeps only Run, Run as, More and the assistant toggle; the
               full row of controls wrapped to 166 px on a 375 px phone, a quarter of the screen
               above the editor. The same actions live in `ToolbarMore` there. */}
           <div className="hidden flex-wrap items-center gap-2 sm:flex">
-            <select value="" onChange={(e) => e.target.value && setSql(SNIPPETS[Number(e.target.value)].sql)} aria-label="Snippets" className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs font-semibold">
-              <option value="">Snippets…</option>
+            <select value="" onChange={(e) => e.target.value && setSql(SNIPPETS[Number(e.target.value)].sql)} aria-label={t.playground.snippets} className="rounded-lg border border-line bg-surface px-2 py-1.5 text-xs font-semibold">
+              <option value="">{t.playground.snippetsPrompt}</option>
               {SNIPPETS.map((s, i) => <option key={s.label} value={i}>{s.label}</option>)}
             </select>
-            <ShareButton sql={sql} persona={persona} />
+            <CopyLinkButton sql={sql} persona={persona} />
             <label
               className={`flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-semibold transition ${sandbox ? 'border-warn/40 bg-warn/10 text-warn' : 'border-line hover:bg-surface-2'}`}
-              title="Wrap every run in BEGIN / ROLLBACK — changes are rolled back, data is never modified"
+              title={t.playground.titles.sandbox}
             >
               <input type="checkbox" checked={sandbox} onChange={(e) => setSandbox(e.target.checked)} className="accent-warn" />
-              <Undo2 className="h-3.5 w-3.5" /> Sandbox
+              <Undo2 className="h-3.5 w-3.5" /> {t.playground.sandbox}
             </label>
             <button
               onClick={runAsAll}
               disabled={running}
-              title="Run this query as Superuser, Alice, and Anonymous side by side"
+              title={t.playground.titles.compare}
               className="flex items-center gap-1 rounded-lg border border-accent/30 px-2.5 py-1.5 text-xs font-semibold text-accent hover:bg-accent/10 disabled:opacity-60"
             >
-              {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />} 3× Compare
+              {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />} {t.playground.compare}
             </button>
             <button
               onClick={probeRls}
               disabled={running}
-              title="Test the RLS policy in the editor against every persona and show a visibility matrix"
+              title={t.playground.titles.rlsMatrix}
               className="flex items-center gap-1 rounded-lg border border-warn/30 px-2.5 py-1.5 text-xs font-semibold text-warn hover:bg-warn/10 disabled:opacity-60"
             >
-              <ShieldCheck className="h-3.5 w-3.5" /> RLS Matrix
+              <ShieldCheck className="h-3.5 w-3.5" /> {t.playground.rlsMatrix}
             </button>
           </div>
 
-          <div className="ml-auto hidden items-center gap-2 sm:flex">
+          <div className="ms-auto hidden items-center gap-2 sm:flex">
             {aiEnabled ? (
               <>
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-muted" title="Ghost-text suggestions from Claude as you type">
-                  <input type="checkbox" checked={aiComplete} onChange={(e) => setAiComplete(e.target.checked)} /> AI autocomplete
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-muted" title={t.playground.titles.aiAutocomplete}>
+                  <input type="checkbox" checked={aiComplete} onChange={(e) => setAiComplete(e.target.checked)} /> {t.playground.aiAutocomplete}
                 </label>
                 <button onClick={() => ask({ task: 'explain', title: 'Explain', sql })} className="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold hover:bg-surface-2">
-                  <Sparkles className="h-3.5 w-3.5 text-accent" /> Explain
+                  <Sparkles className="h-3.5 w-3.5 text-accent" /> {t.playground.explain}
                 </button>
                 {canExplainPlan && (
-                  <button onClick={explainPlan} className="flex items-center gap-1 rounded-lg border border-accent/30 px-2.5 py-1.5 text-xs font-semibold text-accent hover:bg-accent/10" title="Run EXPLAIN (FORMAT JSON) and ask Claude to walk the plan tree">
-                    <Sparkles className="h-3.5 w-3.5 text-accent" /> Explain plan
+                  <button onClick={explainPlan} className="flex items-center gap-1 rounded-lg border border-accent/30 px-2.5 py-1.5 text-xs font-semibold text-accent hover:bg-accent/10" title={t.playground.titles.explainPlan}>
+                    <Sparkles className="h-3.5 w-3.5 text-accent" /> {t.playground.explainPlan}
                   </button>
                 )}
-                <button onClick={() => ask({ task: 'review', title: 'Security review', sql })} className="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold hover:bg-surface-2" title="Security &amp; correctness review">
-                  <ShieldCheck className="h-3.5 w-3.5 text-good" /> Review
+                <button onClick={() => ask({ task: 'review', title: 'Security review', sql })} className="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold hover:bg-surface-2" title={t.playground.titles.review}>
+                  <ShieldCheck className="h-3.5 w-3.5 text-good" /> {t.playground.review}
                 </button>
               </>
             ) : (
-              <span className="text-[11px] text-muted" title="Set ANTHROPIC_API_KEY in .env.local">AI off · add ANTHROPIC_API_KEY</span>
+              <span className="text-[11px] text-muted" title="Set ANTHROPIC_API_KEY in .env.local">{t.playground.aiOff}</span>
             )}
             <AssistantToggle aiOpen={aiOpen} onToggle={() => setAiOpen((v) => !v)} />
           </div>
 
-          <div className="ml-auto flex items-center gap-1 sm:hidden">
+          <div className="ms-auto flex items-center gap-1 sm:hidden">
             <ToolbarMore
               snippets={SNIPPETS}
               onSnippet={(text) => setSql(text)}
-              share={<ShareButton sql={sql} persona={persona} />}
+              copyLink={<CopyLinkButton sql={sql} persona={persona} />}
               sandbox={sandbox}
               onSandbox={setSandbox}
               onCompare={runAsAll}
@@ -500,25 +545,28 @@ export function Playground() {
           {/* Five tabs do not fit a 320 px panel, and the strip has no dropdowns inside it, so a
               scrolling tab row is safe here (unlike the toolbar, which hosts absolute panels). */}
           <div className="flex items-center gap-1 overflow-x-auto border-b border-line px-3 pt-2">
-            <TabButton active={bottom === 'results'} onClick={() => { setBottom('results'); setBottomClosed(false); }}>Results</TabButton>
-            <TabButton active={bottom === 'table'} onClick={() => { setBottom('table'); setBottomClosed(false); }} disabled={!table}>{table ? `Table · ${table.name}` : 'Table (pick one)'}</TabButton>
+            <TabButton active={bottom === 'results'} onClick={() => { setBottom('results'); setBottomClosed(false); }}>{t.playground.results}</TabButton>
+            <TabButton active={bottom === 'table'} onClick={() => { setBottom('table'); setBottomClosed(false); }} disabled={!table}>{table ? `${t.playground.table} · ${table.name}` : t.playground.tablePickOne}</TabButton>
             {/* The Explorer aside is `hidden lg:block`, so below `lg` the schema needs a route here
-                (T5-6) — otherwise a phone has no table list at all. */}
-            <TabButton className="lg:hidden" active={bottom === 'schema'} onClick={() => { setBottom('schema'); setBottomClosed(false); }}>Schema</TabButton>
-            <TabButton active={bottom === 'history'} onClick={() => { setBottom('history'); setBottomClosed(false); }}>History</TabButton>
-            <TabButton active={bottom === 'rls'} onClick={() => { setBottom('rls'); setBottomClosed(false); }}>RLS Matrix</TabButton>
+                (T5-6). Otherwise a phone has no table list at all. */}
+            <TabButton className="lg:hidden" active={bottom === 'schema'} onClick={() => { setBottom('schema'); setBottomClosed(false); }}>{t.playground.schema}</TabButton>
+            <TabButton active={bottom === 'history'} onClick={() => { setBottom('history'); setBottomClosed(false); }}>{t.playground.history}</TabButton>
+            <TabButton active={bottom === 'rls'} onClick={() => { setBottom('rls'); setBottomClosed(false); }}>{t.playground.rlsMatrix}</TabButton>
             {/* Pinned right so the collapse control stays reachable when the tab strip scrolls (320 px). */}
             <button
               onClick={() => setBottomClosed((v) => !v)}
-              aria-label={bottomClosed ? 'Expand results panel' : 'Collapse results panel'}
-              title={bottomClosed ? 'Expand the results panel' : 'Collapse — or drag the slider above for an exact height'}
-              className="sticky right-0 ml-auto rounded-lg bg-surface p-1 text-muted hover:bg-surface-2"
+              aria-label={bottomClosed ? t.playground.titles.expand : t.playground.titles.collapse}
+              title={bottomClosed ? t.playground.titles.expand : t.playground.titles.collapse}
+              className="sticky end-0 ms-auto rounded-lg bg-surface p-1 text-muted hover:bg-surface-2"
             >
               {bottomClosed ? <PanelBottomOpen className="h-4 w-4" /> : <PanelBottomClose className="h-4 w-4" />}
             </button>
           </div>
-          {!bottomClosed && (
-          <div className="min-h-0 flex-1 overflow-auto">
+          {/* One keyed node per tab, so switching tabs cross-fades instead of replacing the panel
+              mid-paint. `mode="wait"` keeps the two halves from overlapping in a scroll container. */}
+          <AnimatePresence mode="wait" initial={false}>
+            {!bottomClosed && (
+              <motion.div key={bottom} {...tabSwap} className="min-h-0 flex-1 overflow-auto">
             {bottom === 'results' && (
               <div className="p-3">
                 {multi ? (
@@ -526,7 +574,7 @@ export function Playground() {
                 ) : run ? (
                   <ResultView result={run.result} skip={run.skip} onAskAi={aiEnabled && !run.result.ok ? () => ask({ task: 'fix', title: 'Fix this error', sql, error: run.result.ok ? undefined : run.result.error }) : undefined} />
                 ) : (
-                  <p className="text-sm text-muted">Run a query to see results. Select text to run only that part.</p>
+                  <p className="text-sm text-muted">{t.playground.resultsHint}</p>
                 )}
               </div>
             )}
@@ -538,40 +586,64 @@ export function Playground() {
             {bottom === 'rls' && (
               <div className="p-3">
                 {running ? (
-                  <p className="flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" /> Probing RLS policy…</p>
+                  <p className="flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" /> {t.playground.probingRls}</p>
                 ) : rlsMatrix ? (
                   <RlsMatrixPanel matrix={rlsMatrix} />
                 ) : (
                   <p className="text-sm text-muted">
-                    Put an RLS policy in the editor (e.g. from the RLS lesson), then press{" "}
-                    <span className="font-semibold text-warn">RLS Matrix</span> in the toolbar to test it.
+                    {t.playground.rlsHintPre}{' '}
+                    <span className="font-semibold text-warn">{t.playground.rlsMatrix}</span> {t.playground.rlsHintPost}
                   </p>
                 )}
               </div>
             )}
-          </div>
-          )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </main>
 
       {/* Below 2xl the assistant is a sheet over the editor, so it gets the two things a covering
           panel owes you: something behind it to tap, and a close button in its own header. */}
-      {aiOpen && !wide && <button aria-label="Close the assistant" onClick={() => setAiOpen(false)} className="fixed inset-0 z-30 bg-black/45" />}
-      {aiOpen && (
-        <aside
+      <AnimatePresence>
+        {aiOpen && !wide && (
+          <motion.button key="assistant-scrim" aria-label={t.playground.closeAssistant} onClick={() => setAiOpen(false)} {...sheetBackdrop} className="fixed inset-0 z-30 bg-black/45" />
+        )}
+        {aiOpen && (
+        <motion.aside
+          key="assistant"
           id="playground-assistant"
+          {...(wide ? contentFade : assistantSheet)}
           className={clsx(
             'min-h-0 flex-col bg-surface',
             wide
-              ? 'hidden border-l border-line 2xl:flex'
+              ? 'hidden border-s border-line 2xl:flex'
               : 'fixed inset-x-0 bottom-0 z-40 flex h-[72dvh] rounded-t-2xl border-t border-line shadow-card',
           )}
         >
           <div className="border-b border-line p-3">
             <div className="mb-2 flex items-center gap-1.5 text-sm font-bold">
-              <Wand2 className="h-4 w-4 text-accent" /> Ask about Postgres
+              <Wand2 className="h-4 w-4 text-accent" /> {t.playground.askPostgres}
+              {/* The answer language, next to the thing it governs. Persisted and shared with the
+                  lesson copilot, so one pick follows the reader across the app. */}
+              <span className="ms-auto">
+                <LanguagePicker
+                  align="right"
+                  size="sm"
+                  includeEnglish
+                  hint="Answer language"
+                  value={askLang}
+                  onChange={(code) => {
+                    setAskLang(code);
+                    try {
+                      localStorage.setItem(LANG_KEY, code);
+                    } catch {}
+                  }}
+                />
+              </span>
               {!wide && (
-                <button onClick={() => setAiOpen(false)} aria-label="Close the assistant" className="ml-auto rounded-lg p-1 text-muted hover:bg-surface-2">
+                <button onClick={() => setAiOpen(false)} aria-label={t.playground.closeAssistant} className="rounded-lg p-1 text-muted hover:bg-surface-2"
+                >
                   <X className="h-4 w-4" />
                 </button>
               )}
@@ -584,7 +656,7 @@ export function Playground() {
                 setQuestion('');
               }}
             >
-              {/* The mic sits inside the textarea's reserved pr-10 gutter; positioned from a
+              {/* The mic sits inside the textarea's reserved pe-10 gutter; positioned from a
                   wrapper, because VoiceButton's own root is `relative` and would win. */}
               <div className="relative">
                 <textarea
@@ -593,11 +665,11 @@ export function Playground() {
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }}
                   disabled={!aiEnabled}
                   rows={3}
-                  placeholder={aiEnabled ? 'e.g. Write a policy so members can only update their own tasks' : 'Set ANTHROPIC_API_KEY in .env.local to enable the assistant.'}
-                  className="block w-full resize-none rounded-xl border border-line bg-bg p-2.5 pr-10 text-sm outline-none focus:border-accent"
+                  placeholder={aiEnabled ? t.playground.assistantPromptHint : t.playground.assistantOffHint}
+                  className="block w-full resize-none rounded-xl border border-line bg-bg p-2.5 pe-10 text-sm outline-none focus:border-accent"
                 />
                 {aiEnabled && (
-                  <div className="absolute bottom-1.5 right-1.5">
+                  <div className="absolute bottom-1.5 end-1.5">
                     <VoiceButton onText={(t) => setQuestion((q) => (q ? `${q} ${t}` : t))} />
                   </div>
                 )}
@@ -605,13 +677,14 @@ export function Playground() {
             </form>
           </div>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-            {asks.length === 0 && <p className="text-xs text-muted">Answers use your live schema as context. Try “Explain” on the editor or ask anything about RLS, roles, functions or triggers.</p>}
+            {asks.length === 0 && <p className="text-xs text-muted">{t.playground.assistantEmpty}</p>}
             {asks.map((a) => (
-              <AiAnswer key={a.id} task={a.task} title={a.title} payload={{ sql: a.sql, error: a.error, question: a.question, schema: a.schema, plan: a.plan }} onApplySql={handleApplySql} onClose={() => setAsks((list) => list.filter((x) => x.id !== a.id))} />
+              <AiAnswer key={a.id} task={a.task} title={a.title} payload={{ sql: a.sql, error: a.error, question: a.question, schema: a.schema, plan: a.plan, language: a.language }} onApplySql={handleApplySql} onClose={() => setAsks((list) => list.filter((x) => x.id !== a.id))} />
             ))}
           </div>
-        </aside>
-      )}
+        </motion.aside>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -625,16 +698,17 @@ function TabButton({ active, onClick, disabled, className, children }: { active:
 }
 
 /**
- * Assistant toggle, rendered once in the desktop cluster and once in the phone cluster — below 2xl
+ * Assistant toggle, rendered once in the desktop cluster and once in the phone cluster: below 2xl
  * this is the only route to the panel, so it has to survive every width. The hidden copy is
  * `display: none`, so it never reaches the accessibility tree.
  */
 function AssistantToggle({ aiOpen, onToggle }: { aiOpen: boolean; onToggle: () => void }) {
+  const { t } = useT();
   return (
     <button
       type="button"
       onClick={onToggle}
-      aria-label={aiOpen ? 'Close the assistant' : 'Open the assistant'}
+      aria-label={aiOpen ? t.playground.closeAssistant : t.playground.assistantOpen}
       aria-expanded={aiOpen}
       aria-controls="playground-assistant"
       className="rounded-lg p-1.5 text-muted hover:bg-surface-2"
@@ -644,7 +718,8 @@ function AssistantToggle({ aiOpen, onToggle }: { aiOpen: boolean; onToggle: () =
   );
 }
 
-function ShareButton({ sql, persona }: { sql: string; persona: string }) {
+function CopyLinkButton({ sql, persona }: { sql: string; persona: string }) {
+  const { t } = useT();
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
 
   async function copy() {
@@ -663,17 +738,17 @@ function ShareButton({ sql, persona }: { sql: string; persona: string }) {
   return (
     <button
       onClick={copy}
-      title="Copy a share link (SQL is compressed into the URL)"
+      title={t.playground.titles.copyLink}
       className={clsx(
         'flex items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-xs font-semibold transition',
         state === 'copied' ? 'border-good/40 text-good' : state === 'error' ? 'border-bad/40 text-bad' : 'hover:bg-surface-2',
       )}
     >
       {state === 'copied'
-        ? <span aria-live="polite">Copied ✓</span>
+        ? <span aria-live="polite">{t.common.linkCopied} ✓</span>
         : state === 'error'
-        ? <span>Failed</span>
-        : <><Share2 className="h-3.5 w-3.5" /> Share</>}
+        ? <span>{t.common.failed}</span>
+        : <><Link2 className="h-3.5 w-3.5" /> {t.playground.copyLink}</>}
     </button>
   );
 }

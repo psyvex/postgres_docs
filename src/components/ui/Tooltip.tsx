@@ -4,7 +4,7 @@
  * One global tooltip for the whole app.
  *
  * It is delegated: a single pair of document listeners upgrades every `title="…"` attribute that
- * already exists in the codebase — buttons, icons, badges, chips — into a themed tooltip, with no
+ * already exists in the codebase, buttons, icons, badges, chips, into a themed tooltip, with no
  * call-site changes. New components just write `title` and inherit the behaviour.
  *
  * Suppressing the native tooltip: the browser paints `title` on its own schedule, so on show the
@@ -14,7 +14,7 @@
  * tooltip at all.
  *
  * Conventions: `z-[80]` (above modal 60 / toast 70, below the splash's 100); tokens only;
- * `useReducedMotion` drops the entrance animation. Touch pointers are ignored deliberately — a
+ * `useReducedMotion` drops the entrance animation. Touch pointers are ignored deliberately: a
  * tooltip that sticks to a tapped element is worse than none. Disabled controls get no tooltip,
  * because Chrome fires no pointer events on them; that is the accepted cost of delegation.
  */

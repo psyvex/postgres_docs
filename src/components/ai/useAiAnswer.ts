@@ -28,7 +28,7 @@ type Entry = {
 const mem = new Map<string, Entry>();
 let disk: Record<string, { t: string; at: number }> | null = null;
 
-/** djb2 over the payload — enough to tell two asks apart without shipping the key. */
+/** djb2 over the payload, enough to tell two asks apart without shipping the key. */
 function hash(s: string) {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i);

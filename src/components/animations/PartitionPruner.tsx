@@ -8,7 +8,7 @@ import { DemoFrame, Segmented } from '@/components/docs/Callout';
 
 // Row counts measured in this lab's PGlite (PostgreSQL 18) against the 12-partition events_p table
 // the lesson builds, via `SELECT count(*) FROM ONLY <partition>`:
-//   parent (events_p)               pg_table_size = 0 bytes — the parent stores nothing
+//   parent (events_p)               pg_table_size = 0 bytes : the parent stores nothing
 //   Jan 10198  Feb 9541  Mar 10199  Apr 9870  May 10199  Jun 9871
 //   Jul 10199  Aug 10199  Sep 9870  Oct 10175  Nov 9840  Dec 9840   (total 120,001)
 // The partitions are NOT equal: the generator spreads rows over 365 day-offsets and 2024 is a leap
@@ -94,7 +94,7 @@ export function PartitionPruner() {
     return () => clearTimeout(t);
   }, [running, stage]);
 
-  // Controls reset state inline — an effect-based reset would flash the previous run's frame.
+  // Controls reset state inline, an effect-based reset would flash the previous run's frame.
   const openRows = pruned ? s.scanned : TOTAL;
 
   return (

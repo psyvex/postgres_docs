@@ -2,11 +2,9 @@
 
 import Link from 'next/link';
 import clsx from 'clsx';
-import { topics, type Topic } from '@/content/registry';
+import { topics, usedTracks } from '@/content/registry';
 import { Icon } from '@/components/icons';
 import { useProgress } from '@/lib/learn/progress';
-
-const TRACK_ORDER: Topic['track'][] = ['Security', 'Programming', 'Foundations', 'Performance', 'Operations'];
 
 export function TopicSidebar({ active }: { active: string }) {
   const progress = useProgress();
@@ -14,7 +12,7 @@ export function TopicSidebar({ active }: { active: string }) {
   return (
     <aside className="hidden border-r border-line lg:block">
       <nav className="sticky top-14 max-h-[calc(100vh-3.5rem)] space-y-6 overflow-y-auto px-4 py-8">
-        {TRACK_ORDER.map((track) => {
+        {usedTracks(topics).map((track) => {
           const list = topics.filter((t) => t.track === track);
           if (!list.length) return null;
           return (

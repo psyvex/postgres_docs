@@ -3,12 +3,12 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { LiveConnection } from './types';
 
 /**
- * The gate in front of `/api/db/query` — the one route that runs arbitrary SQL.
+ * The gate in front of `/api/db/query`: the one route that runs arbitrary SQL.
  *
  * Default: hosts on this machine only. `ALLOW_REMOTE_DB=true` opens the door to any host the
  * operator names, which turns the route into a remote-code-execution surface for whoever can reach
  * the port, so opening it *requires* `DB_QUERY_TOKEN`: every request must then carry that value in
- * the `x-db-token` header. Remote mode with no token configured fails **closed** — the route
+ * the `x-db-token` header. Remote mode with no token configured fails **closed**: the route
  * refuses everything and says what to set, rather than running wide open on a half-configured box.
  *
  * Local mode needs no token: the localhost guard *is* the control there, and a browser has no way

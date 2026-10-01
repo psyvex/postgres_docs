@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 /**
  * One readable text size for every AI answer on the page (lesson assistant, playground, SQL blocks).
  *
- * Responsive by default — small screens get a smaller base — until the reader picks a size, which is
+ * Responsive by default, small screens get a smaller base, until the reader picks a size, which is
  * remembered per browser. The size is published as the `--ai-fs` custom property on <html> (see
  * `.ai-text` in globals.css) and every mounted control is notified, so A− in one panel shrinks the
  * answers in every other panel too.

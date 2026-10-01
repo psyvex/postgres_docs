@@ -1,6 +1,6 @@
 /**
  * Demo dataset shared by every lesson: a tiny multi-tenant task tracker.
- * Idempotent — rerunning drops and rebuilds the `lab` schema. Roles are cluster-wide,
+ * Idempotent, rerunning drops and rebuilds the `lab` schema. Roles are cluster-wide,
  * so they are created only if missing and never dropped.
  *
  * Security features (RLS, policies, triggers) are intentionally NOT enabled here;
@@ -60,7 +60,7 @@ CREATE TABLE audit_log (
   changed_at  timestamptz NOT NULL DEFAULT now()
 );
 
--- "Who is calling?" — the app sets these per request, e.g. SELECT set_config('app.member_id', '1', false);
+-- "Who is calling?": the app sets these per request, e.g. SELECT set_config('app.member_id', '1', false);
 CREATE FUNCTION current_member_id() RETURNS int
   LANGUAGE sql STABLE
   AS $fn$ SELECT nullif(current_setting('app.member_id', true), '')::int $fn$;

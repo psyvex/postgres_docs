@@ -14,12 +14,12 @@ export type Topic = {
   title: string;
   icon: IconName;
   tagline: string;
-  track: 'Security' | 'Programming' | 'Foundations' | 'Performance' | 'Operations';
+  track: 'Security' | 'Programming' | 'Foundations' | 'Performance' | 'Operations' | 'Integrations';
   status: 'ready' | 'planned' | 'break';
   /** Minutes to read + try the examples. */
   minutes?: number;
   references?: Reference[];
-  /** Number of graded challenge blocks — for break-it lesson headers. */
+  /** Number of graded challenge blocks. Used by break-it lesson headers. */
   challengeCount?: number;
 };
 
@@ -135,7 +135,7 @@ export const topics: Topic[] = [
     minutes: 15,
     challengeCount: 8,
   },
-  // Roadmap — shown on the home page so the lab grows into a full Postgres handbook.
+  // Roadmap, shown on the home page so the lab grows into a full Postgres handbook.
   {
     slug: 'transactions-mvcc',
     title: 'Transactions & MVCC',
@@ -201,8 +201,94 @@ export const topics: Topic[] = [
       { title: 'Backup and Restore (dump/restore discussion)', url: `${PG_DOCS}/backup-dump.html` },
     ],
   },
+  // ─── Integrations ────────────────────────────────────────────────────────────
+  // T6 lessons: real project code + live SQL — see docs/TASKS.md T6 tier.
+  {
+    slug: 'nestjs-rls',
+    title: 'NestJS + RLS',
+    icon: 'codeTree',
+    tagline: 'Attach RLS policies to a NestJS app with a per-request connection middleware.',
+    track: 'Integrations',
+    status: 'ready',
+    minutes: 20,
+    references: [
+      { title: 'NestJS DataSource / TypeORM', url: 'https://docs.nestjs.com/techniques/database' },
+      { title: 'Middleware in NestJS', url: 'https://docs.nestjs.com/middleware' },
+      { title: 'Pg RLS + Node.js (blog)', url: 'https://neon.tech/postgresql/learn/postgresql-getting-started/fundamentals/postgresql-row-level-security-nodejs' },
+    ],
+  },
+  {
+    slug: 'fastapi-rls',
+    title: 'FastAPI + RLS',
+    icon: 'codeTree',
+    tagline: 'Set per-request identity with psycopg2 and a FastAPI dependency.',
+    track: 'Integrations',
+    status: 'planned',
+    minutes: 20,
+  },
+  {
+    slug: 'nextjs-rls',
+    title: 'Next.js + RLS',
+    icon: 'codeTree',
+    tagline: 'Middleware, server actions and API routes — all three layers with RLS.',
+    track: 'Integrations',
+    status: 'planned',
+    minutes: 20,
+  },
+  {
+    slug: 'real-indexes',
+    title: 'Indexes in Practice',
+    icon: 'codeTree',
+    tagline: 'Adding composite, partial and expression indexes to a real app schema.',
+    track: 'Integrations',
+    status: 'planned',
+    minutes: 20,
+  },
+  {
+    slug: 'real-transactions',
+    title: 'Transactions in Practice',
+    icon: 'codeTree',
+    tagline: 'Serializable isolation, advisory locks and retry loops in NestJS.',
+    track: 'Integrations',
+    status: 'planned',
+    minutes: 20,
+  },
+  {
+    slug: 'live-database',
+    title: 'Connect Your Database',
+    icon: 'codeTree',
+    tagline: 'Wire the playground to your own Postgres instance and run any lesson live.',
+    track: 'Integrations',
+    status: 'planned',
+    minutes: 5,
+  },
 ];
 
 export const readyTopics = topics.filter((t) => t.status === 'ready' || t.status === 'break');
 export const getTopic = (slug: string) =>
   topics.find((t) => t.slug === slug && (t.status === 'ready' || t.status === 'break'));
+
+/** Tracks in the order the curriculum teaches them. */
+export const TRACK_ORDER: Topic['track'][] = [
+  'Security',
+  'Programming',
+  'Foundations',
+  'Performance',
+  'Operations',
+  'Integrations',
+];
+
+
+/**
+ * Every track in use, in curriculum order. A track missing from `TRACK_ORDER` is
+ * appended rather than dropped, so adding one is a registry edit that cannot
+ * silently hide its lessons from the sidebar — which is exactly what happened
+ * when `Integrations` shipped without being listed anywhere outside this file.
+ */
+export function usedTracks(source: Topic[] = topics): Topic['track'][] {
+  const rank = (track: Topic['track']) => {
+    const i = TRACK_ORDER.indexOf(track);
+    return i === -1 ? Infinity : i;
+  };
+  return Array.from(new Set(source.map((t) => t.track))).sort((a, b) => rank(a) - rank(b));
+}

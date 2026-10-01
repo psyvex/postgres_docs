@@ -79,7 +79,7 @@ export function PitrTimeline() {
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [stage]);
 
-  // Reset state inline — not in an effect.
+  // Reset state inline: not in an effect.
   const pick = (next: Mode) => { setMode(next); setStage(-1); };
   const reset = () => setStage(-1);
 
@@ -130,7 +130,7 @@ export function PitrTimeline() {
     >
       <div className="space-y-4">
 
-        {/* The backup_label — the centrepiece, shown once Run is pressed */}
+        {/* The backup_label, the centrepiece, shown once Run is pressed */}
         {stage >= 0 && (
           <motion.div
             key="label"

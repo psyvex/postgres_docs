@@ -9,20 +9,23 @@ import { DbModeSwitch } from './DbModeSwitch';
 import { ThemeToggle } from './ThemeToggle';
 import { OPEN_PALETTE_EVENT } from './CommandPalette';
 import { BrandMark } from '@/components/brand/BrandMark';
+import { useT } from '@/lib/i18n/useT';
 
 /** Opens the ⌘K palette, which listens for this event on the window. */
 function openPalette() {
   window.dispatchEvent(new Event(OPEN_PALETTE_EVENT));
 }
 
-// `short` is the label used below `sm`, where every pixel of the row is budgeted (T5-6).
-const NAV = [
-  { href: '/learn/row-level-security', match: '/learn', label: 'Learn', short: 'Learn' },
-  { href: '/playground', match: '/playground', label: 'Playground', short: 'Play' },
+// `tKey`/`tShortKey` are looked up against the dictionary at render time so the labels follow the
+// interface language. `short` is the label used below `sm` (T5-6).
+const NAV: { href: string; match: string; tKey: 'learn' | 'playground'; tShortKey: 'learn' | 'play' }[] = [
+  { href: '/learn/row-level-security', match: '/learn', tKey: 'learn', tShortKey: 'learn' },
+  { href: '/playground', match: '/playground', tKey: 'playground', tShortKey: 'play' },
 ];
 
 export function AppHeader() {
   const pathname = usePathname();
+  const { t } = useT();
   const [replay, setReplay] = useState(0);
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-bg/85 backdrop-blur">
@@ -31,7 +34,7 @@ export function AppHeader() {
           <BrandMark key={replay} size={30} mode="once" />
           <span className="hidden sm:inline">Postgres Lab</span>
         </Link>
-        <nav className="ml-auto flex items-center gap-1">
+        <nav className="ms-auto flex items-center gap-1">
           {NAV.map((item) => (
             <Link
               key={item.href}
@@ -43,18 +46,18 @@ export function AppHeader() {
             >
               {/* "Playground" does not fit a 320 px row alongside the DB chip, so the row carries
                   a short label below `sm` (T5-6). Both spans are in the a11y tree; one is hidden. */}
-              <span className="hidden sm:inline">{item.label}</span>
-              <span className="sm:hidden">{item.short}</span>
+              <span className="hidden sm:inline">{t.header[item.tKey]}</span>
+              <span className="sm:hidden">{t.header[item.tShortKey]}</span>
             </Link>
           ))}
         </nav>
         {/* The divider is a luxury at 320 px: its 12 px of padding is what pushes the row over. */}
-        <div className="flex items-center gap-2 border-l border-line pl-3 sm:pl-4 max-sm:border-l-0 max-sm:pl-0">
+        <div className="flex items-center gap-2 border-s border-line ps-3 sm:ps-4 max-sm:border-s-0 max-sm:ps-0">
           <button
             type="button"
             onClick={openPalette}
-            title="Search lessons, snippets and tables (⌘K)"
-            aria-label="Open search"
+            title={`${t.header.search} (⌘K)`}
+            aria-label={t.header.searchAria}
             className="hidden items-center gap-2 rounded-lg border border-line bg-surface px-2 py-1.5 text-xs font-semibold text-muted transition hover:border-brand hover:text-brand sm:flex"
           >
             <Search className="h-3.5 w-3.5" />

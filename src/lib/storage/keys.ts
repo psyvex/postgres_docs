@@ -29,7 +29,7 @@ const KNOWN: { match: (key: string) => boolean; info: StorageKeyInfo }[] = [
     match: (k) => k === 'postgres-lab:ai-cache',
     info: {
       label: 'AI answer cache',
-      detail: 'Every answer Claude gave you, keyed by question — plus the SQL and schema text it was asked about. Kept for 7 days.',
+      detail: 'Every answer Claude gave you, keyed by question, plus the SQL and schema text it was asked about. Kept for 7 days.',
       group: 'sql',
       private: true,
     },
@@ -72,10 +72,14 @@ const KNOWN: { match: (key: string) => boolean; info: StorageKeyInfo }[] = [
     info: { label: 'Preferred language', detail: 'The language you last translated a lesson into.', group: 'appearance' },
   },
   {
+    match: (k) => k === 'postgres-lab:ui-lang',
+    info: { label: 'Interface language', detail: 'The language the app chrome is written in. Applied before first paint via a script in the document head, so it is also read there.', group: 'appearance' },
+  },
+  {
     match: (k) => k === 'postgres-lab:db',
     info: {
       label: 'Database connection',
-      detail: 'Browser mode or live mode, and for live mode the host, port, database and user. The password and the server token are kept in memory only — they are never written here.',
+      detail: 'Browser mode or live mode, and for live mode the host, port, database and user. The password and the server token are kept in memory only, never written here.',
       group: 'connection',
     },
   },
@@ -88,13 +92,13 @@ const KNOWN: { match: (key: string) => boolean; info: StorageKeyInfo }[] = [
 export function describeKey(key: string): StorageKeyInfo {
   const hit = KNOWN.find((k) => k.match(key));
   if (hit) return hit.info;
-  return { label: key.replace(STORAGE_PREFIX, ''), detail: 'Not described — a key this build does not know about.', group: 'other' };
+  return { label: key.replace(STORAGE_PREFIX, ''), detail: 'Not described: a key this build does not know about.', group: 'other' };
 }
 
 export type StorageEntry = { key: string; bytes: number; info: StorageKeyInfo };
 
 /** Every `postgres-lab:*` key, biggest first. Byte counts are UTF-16 code units × 2, the unit
- *  browsers charge against the ~5 MB quota. */
+ * browsers charge against the ~5 MB quota. */
 export function listEntries(): StorageEntry[] {
   const out: StorageEntry[] = [];
   for (let i = 0; i < localStorage.length; i++) {

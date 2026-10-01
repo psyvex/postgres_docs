@@ -43,7 +43,7 @@ export function HeroIntro({ stats, firstLesson }: { stats: HeroStat[]; firstLess
         className="mt-4 w-fit -rotate-2 font-hand text-2xl text-accent"
         style={{ textShadow: '0 0 18px color-mix(in srgb, var(--accent) 18%, transparent)' }}
       >
-        real Postgres, in your tab — go on, break it.
+        real Postgres, in your tab. Go on, break it.
       </motion.p>
 
       <motion.div data-sketch-avoid variants={rise} initial="hidden" animate="show" custom={4} className="mt-8 flex w-fit flex-wrap gap-3">

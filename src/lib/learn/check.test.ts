@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkProblems, describeChecks, gradeChecks } from './check';
 
-// Helpers ---------------------------------------------------------------------
+// Helpers
 
 /** A successful SELECT returning `rows` rows with column `cols` (default one string column "v"). */
 const sel = (rows: number, cols: string[] = ['v']): import('@/lib/db/types').RunResult => ({
@@ -26,7 +26,7 @@ const fail = (error: string): import('@/lib/db/types').RunResult => ({
 
 const PASS = { passed: true, failures: [] };
 
-// `checkProblems` ----------------------------------------------------------------
+// `checkProblems`
 
 describe('checkProblems', () => {
   it('passes a valid check array', () => {
@@ -55,7 +55,7 @@ describe('checkProblems', () => {
   });
 });
 
-// `describeChecks` ----------------------------------------------------------------
+// `describeChecks`
 
 describe('describeChecks', () => {
   it('describes every check type', () => {
@@ -70,7 +70,7 @@ describe('describeChecks', () => {
   });
 });
 
-// `gradeChecks` — success paths ----------------------------------------------------------------
+// `gradeChecks`: success paths
 
 describe('gradeChecks: rows', () => {
   it('passes when the row count matches', () => {
@@ -101,7 +101,7 @@ describe('gradeChecks: rows', () => {
   });
 
   it('skips leading session-setup statements', () => {
-    // The RLS lesson's alice query runs with prefix (skip=3) — the SELECT is last with columns.
+    // The RLS lesson's alice query runs with prefix (skip=3): the SELECT is last with columns.
     const r: import('@/lib/db/types').RunResult = {
       ok: true,
       durationMs: 1,
@@ -185,7 +185,7 @@ describe('gradeChecks: firstCell', () => {
   });
 });
 
-// `gradeChecks` — error paths ----------------------------------------------------------------
+// `gradeChecks`: error paths
 
 describe('gradeChecks: error', () => {
   it('passes when the statement fails with matching text', () => {
@@ -213,7 +213,7 @@ describe('gradeChecks: error', () => {
   });
 });
 
-// `gradeChecks` — multi-statement ----------------------------------------------------------
+// `gradeChecks`: multi-statement
 
 describe('gradeChecks: multi-statement', () => {
   it('grades the last statement that has a table', () => {
@@ -232,7 +232,7 @@ describe('gradeChecks: multi-statement', () => {
   });
 });
 
-// `gradeChecks` — authoring guard ----------------------------------------------------------
+// `gradeChecks`: authoring guard
 
 describe('gradeChecks: authoring guard', () => {
   it('reports problems from checkProblems rather than silently passing', () => {

@@ -7,7 +7,7 @@ import { WL_BLUE, WL_BOTTOM, WL_NAVY, WL_TOP, WL_VIEWBOX } from './paths';
 type Mode = 'static' | 'once' | 'loop';
 
 /**
- * Official lab mark — "Draw & Fill": the Webelight wave draws itself, fills with brand colour,
+ * Official lab mark, "Draw & Fill": the Webelight wave draws itself, fills with brand colour,
  * then the PostgreSQL badge stamps on.
  *   static → final frame (logos, favicon source)
  *   once   → plays the intro and stays on the final frame (header, splash)
@@ -66,7 +66,7 @@ export function BrandMark({ size = 40, mode = 'static', title = 'Postgres Lab' }
   );
 }
 
-/** Looping mark with an optional caption — use wherever something is loading. */
+/** Looping mark with an optional caption, use wherever something is loading. */
 export function BrandLoader({ label, size = 56, className = '' }: { label?: string; size?: number; className?: string }) {
   return (
     <div role="status" aria-live="polite" className={`flex flex-col items-center justify-center gap-3 text-sm text-muted ${className}`}>

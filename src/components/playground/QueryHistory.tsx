@@ -36,7 +36,7 @@ export function QueryHistory({ onRecall }: Props) {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div dir="ltr" className="h-full overflow-y-auto">
       {pinned.length > 0 && (
         <>
           <div className="sticky top-0 border-b border-line bg-surface-2 px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-muted">
@@ -63,7 +63,7 @@ export function QueryHistory({ onRecall }: Props) {
         <p className="px-4 py-8 text-center text-xs text-muted">
           {pinned.length === 0
             ? 'Run a query and it will appear here. Press ↑ in an empty editor to recall the last one.'
-            : 'No recent queries — pinned queries above are kept.'}
+            : 'No recent queries. Pinned queries above are kept.'}
         </p>
       )}
     </div>

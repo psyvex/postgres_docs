@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, MotionValue, useTransform } from 'motion/react';
+import { STILL, useMotionPresets } from '@/lib/motion';
 import clsx from 'clsx';
 import { Loader2, Mic, Square } from 'lucide-react';
 import { useAiStatus } from '@/lib/ai/client';
@@ -44,11 +45,11 @@ const voiceError = (code: string) => (code in VOICE_ERRORS ? VOICE_ERRORS[code] 
 
 /**
  * The quiet failure: mic indicator lit, capture ended, zero words, zero error codes. Chrome's
- * speech recognition is a network service, so this is almost always the service being blocked —
+ * speech recognition is a network service, so this is almost always the service being blocked,
  * not the microphone. Worth saying, because "it stopped and told me nothing" reads as a broken mic.
  */
 const SILENT_END =
-  'Microphone is live, but no words came back. Chrome sends speech to Google to be recognised — allow that service (or set TRANSCRIPTION_* to use the server), or type the question.';
+  'Microphone is live, but no words came back. Chrome sends speech to Google to be recognised. Allow that service (or set TRANSCRIPTION_* to use the server), or type the question.';
 
 /** Hard cap on one capture, so the mic can never stay red forever. Visible as a countdown. */
 const CAPTURE_MS = 15000;
@@ -61,6 +62,9 @@ const TICK_MS = 200;
  */
 export function VoiceButton({ onText, language, className }: Props) {
   const { transcription } = useAiStatus();
+  // The capture bubble springs (it is a live instrument, not a menu), so only `still` is taken from
+  // the shared layer; spread last, so reduced motion wins over the inline spring.
+  const { still } = useMotionPresets();
   const [state, setState] = useState<'idle' | 'recording' | 'working'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [left, setLeft] = useState(CAPTURE_MS);
@@ -76,7 +80,7 @@ export function VoiceButton({ onText, language, className }: Props) {
   const { level, live } = useVoiceLevel(state === 'recording' && Boolean(meterFrom), meterFrom);
   const ring = useTransform(level, [0, 1], [1, 1.55]);
 
-  /* Ask the OS before trusting the button: with no input device at all the mic is a trap —
+  /* Ask the OS before trusting the button: with no input device at all the mic is a trap:
      the browser fails with `audio-capture` and nothing the reader taps can fix that. */
   useEffect(() => {
     let alive = true;
@@ -108,7 +112,7 @@ export function VoiceButton({ onText, language, className }: Props) {
   /**
    * Ends one capture. Both stops are wrapped: Chrome throws InvalidStateError out of
    * `SpeechRecognition.stop()` when its speech service never came up, and that throw used to
-   * swallow the state reset below it — leaving the button red with no message, forever.
+   * swallow the state reset below it, leaving the button red with no message, forever.
    */
   const stopCapture = (code?: string) => {
     disarm();
@@ -275,7 +279,7 @@ export function VoiceButton({ onText, language, className }: Props) {
       </button>
 
       {/* Live capture bubble, opening upward: the copilot panel clips overflow, so anything
-          below a mic in its footer would be invisible — exactly when the reader needs it. */}
+          below a mic in its footer would be invisible, exactly when the reader needs it. */}
       <AnimatePresence>
         {state === 'recording' && (
           <motion.div
@@ -283,14 +287,15 @@ export function VoiceButton({ onText, language, className }: Props) {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 480, damping: 34 }}
-            className="pointer-events-none absolute bottom-full right-0 z-30 mb-1.5 w-52 rounded-xl border border-bad/30 bg-surface p-2 shadow-card"
+            {...(still ? STILL : {})}
+            className="pointer-events-none absolute bottom-full end-0 z-30 mb-1.5 w-52 rounded-xl border border-bad/30 bg-surface p-2 shadow-card"
           >
             <div className="flex items-center gap-2">
               <motion.span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-bad text-white" animate={{ opacity: [1, 0.65, 1] }} transition={{ duration: 1.1, repeat: Infinity }}>
                 <Mic className="h-3.5 w-3.5" />
               </motion.span>
               <WaveBars level={level} live={live} />
-              <span className="ml-auto shrink-0 text-xs font-bold tabular-nums text-bad">{secs}s</span>
+              <span className="ms-auto shrink-0 text-xs font-bold tabular-nums text-bad">{secs}s</span>
             </div>
             <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-bad/15">
               <motion.div
@@ -310,7 +315,8 @@ export function VoiceButton({ onText, language, className }: Props) {
           role="alert"
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
-          className="absolute bottom-full right-0 z-30 mb-1.5 w-56 cursor-pointer rounded-lg bg-bad-soft px-2 py-1 text-left text-[11px] font-semibold text-bad shadow-card"
+          {...(still ? STILL : {})}
+          className="absolute bottom-full end-0 z-30 mb-1.5 w-56 cursor-pointer rounded-lg bg-bad-soft px-2 py-1 text-start text-[11px] font-semibold text-bad shadow-card"
           onClick={() => setError(null)}
         >
           {error}

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { useMotionPresets } from '@/lib/motion';
 import clsx from 'clsx';
 import { Check, ChevronDown } from 'lucide-react';
 import { Icon } from '@/components/icons';
@@ -13,6 +14,7 @@ type Props = { value: string; onChange: (id: string) => void; prefix?: string; a
 export function PersonaSelect({ value, onChange, prefix, align = 'right' }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const { popover: menu } = useMotionPresets();
   const current = PERSONAS.find((p) => p.id === value) ?? PERSONAS[0];
 
   useEffect(() => {
@@ -46,11 +48,8 @@ export function PersonaSelect({ value, onChange, prefix, align = 'right' }: Prop
         {open && (
           <motion.ul
             role="listbox"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.12 }}
-            className={clsx('absolute z-30 mt-1 w-60 rounded-xl border border-line bg-surface p-1 shadow-card', align === 'right' ? 'right-0' : 'left-0')}
+            {...menu}
+            className={clsx('absolute z-30 mt-1 w-60 rounded-xl border border-line bg-surface p-1 shadow-card', align === 'right' ? 'end-0' : 'start-0')}
           >
             {PERSONAS.map((p) => (
               <li key={p.id}>
@@ -62,7 +61,7 @@ export function PersonaSelect({ value, onChange, prefix, align = 'right' }: Prop
                     onChange(p.id);
                     setOpen(false);
                   }}
-                  className={clsx('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-semibold', p.id === value ? 'bg-brand-soft text-brand' : 'hover:bg-surface-2')}
+                  className={clsx('flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-start text-xs font-semibold', p.id === value ? 'bg-brand-soft text-brand' : 'hover:bg-surface-2')}
                 >
                   <Icon name={p.icon} size={16} className="text-brand" />
                   <span className="flex-1">{p.label}</span>

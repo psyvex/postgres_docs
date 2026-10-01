@@ -29,6 +29,19 @@ export function SkullIcon(props: IconProps) {
   );
 }
 
+/** A folder tree: used for code/project integration lessons. */
+export function CodeTreeIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M3 7v10M3 12h9M3 17h5" strokeDasharray="2 1.5" />
+      <rect x="8" y="9" width="5" height="6" rx="1.5" fill="currentColor" fillOpacity={0.15} />
+      <rect x="9" y="10" width="3" height="1" rx="0.5" fill="currentColor" fillOpacity={0.6} />
+      <rect x="9" y="12" width="2" height="1" rx="0.5" fill="currentColor" fillOpacity={0.6} />
+      <rect x="9" y="14" width="2.5" height="1" rx="0.5" fill="currentColor" fillOpacity={0.6} />
+    </svg>
+  );
+}
+
 /** Tenant hopping: a jump arc from one tenant box into another. */
 export function TenantHopIcon(props: IconProps) {
   return (

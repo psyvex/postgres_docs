@@ -165,11 +165,11 @@ html[data-splash='seen'] #splash {
 }
 .prose-lab ul {
   list-style: disc;
-  padding-left: 1.4rem;
+  padding-inline-start: 1.4rem;
 }
 .prose-lab ol {
   list-style: decimal;
-  padding-left: 1.4rem;
+  padding-inline-start: 1.4rem;
 }
 .prose-lab li {
   margin: 0.3rem 0;
@@ -211,7 +211,7 @@ html[data-splash='seen'] #splash {
 .prose-lab td {
   border-bottom: 1px solid var(--line);
   padding: 0.5rem 0.6rem;
-  text-align: left;
+  text-align: start;
   vertical-align: top;
 }
 .prose-lab th {
@@ -219,8 +219,8 @@ html[data-splash='seen'] #splash {
   background: var(--surface-2);
 }
 .prose-lab blockquote {
-  border-left: 4px solid var(--brand);
-  padding-left: 1rem;
+  border-inline-start: 4px solid var(--brand);
+  padding-inline-start: 1rem;
   color: var(--muted);
 }
 

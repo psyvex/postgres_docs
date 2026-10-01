@@ -9,12 +9,12 @@ import { Icon } from '@/components/icons';
 
 // The transaction ids are synthetic, and they have to be: this demo's whole point is a race between
 // two sessions, and the lab gives you exactly one connection. They are in the 750s/760s because that
-// is where a fresh PGlite session really lives — this lesson's `SELECT pg_current_snapshot()` measures
+// is where a fresh PGlite session really lives, this lesson's `SELECT pg_current_snapshot()` measures
 // `755:755:`, its rollback block reads `xmin = 760` before the update and `765` inside it, and its
 // bloat blocks run the ids up into the 770s.
 // The visibility rule this animates is the one the lesson states: a version is visible when the
 // transaction that wrote it was committed and not in flight at your snapshot, and no committed
-// transaction has deleted it. No timings are claimed — stage durations are presentation, not fact.
+// transaction has deleted it. No timings are claimed, stage durations are presentation, not fact.
 type Mode = 'rc' | 'rr';
 
 const ROW_ID = 1;
@@ -90,7 +90,7 @@ export function MvccExplainer() {
   const running = stage >= 0 && stage < LAST;
   const done = stage >= LAST;
 
-  // Control changes reset the run inline — an effect here would cost an extra render on every click.
+  // Control changes reset the run inline, an effect here would cost an extra render on every click.
   const pick = (next: Mode) => {
     setMode(next);
     setStage(-1);

@@ -26,15 +26,15 @@ export function RlsMatrixPanel({ matrix }: { matrix: RlsMatrixResult }) {
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div dir="ltr" className="overflow-x-auto">
       <p className="mb-2 text-xs text-muted">
         Each cell shows whether that persona can see that task under the policy in the editor.
-        The probe runs inside a transaction and rolls back — the policy is never committed.
+        The probe runs inside a transaction and rolls back: the policy is never committed.
       </p>
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-line">
-            <th className="py-1.5 pr-3 text-left font-semibold text-muted">task id</th>
+            <th className="py-1.5 pe-3 text-start font-semibold text-muted">task id</th>
             {personas.map((p) => (
               <th key={p.id} className="px-2 py-1.5 text-center font-semibold text-muted">
                 {p.label}
@@ -45,7 +45,7 @@ export function RlsMatrixPanel({ matrix }: { matrix: RlsMatrixResult }) {
         <tbody>
           {taskIds.map((id) => (
             <tr key={id} className="border-b border-line/50 last:border-0">
-              <td className="py-1 pr-3 font-mono">{id}</td>
+              <td className="py-1 pe-3 font-mono">{id}</td>
               {personas.map((p) => {
                 const visible = p.taskIds.includes(id);
                 return (

@@ -3,12 +3,12 @@ import { getTopic, readyTopics } from '@/content/registry';
 import { SITE_NAME } from '@/lib/site';
 
 /**
- * One share card per lesson, generated from the registry entry — the same
+ * One share card per lesson, generated from the registry entry: the same
  * source the page renders from, so a preview can't drift from the lesson.
  *
  * The card is a query editor, not a poster: a link to this site should look
  * like the thing it points at. Colours are literal copies of the dark-theme
- * tokens in globals.css (satori gets no CSS variables — it renders in a
+ * tokens in globals.css (satori gets no CSS variables: it renders in a
  * sandbox with no stylesheet), so a token change needs a look here.
  */
 
